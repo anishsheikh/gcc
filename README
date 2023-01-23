@@ -1,3 +1,7 @@
+Very Very Unsupported GCC 7.3.0 Compiler for VCS 2020.03
+tested with SystemC on RHEL8
+
+
 This directory contains the GNU Compiler Collection (GCC).
 
 The GNU Compiler Collection is free software.  See the files whose
