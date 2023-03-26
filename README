@@ -8,7 +8,7 @@ it installed older versions of gcc may just work but if you trying to use gcc 9+
 installing dev toolset gcc 9 so it will use gcc 9.2.1 libraries for less work, if
 you explicitly describe the ld libraries and includes without any compiler in path it would
 be even better**
-
+**Rest of checking compilers for environment should be available in RHEL DOCS and Support**
 **Version Numbers are just the tested ones by me as of moment, rest support yu gotta test 
 yurself**
 
