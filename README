@@ -1,5 +1,5 @@
 THIS IS MY PERSONAL REPO FOR MY VERSION OF COMPILERS FOR SOME CAD TOOLS THAT AREN'T AVAILABLE IN MOST MAINLINE REPOS
-Unsupported GCC 9.2.0 tested with compilation of Xilinx Vivado IP compile with VCS 2022.06-SP2 on RHEL 8 x86_64
+Unsupported GCC 9.2.0 tested with compilation of Xilinx Vivado IP on suite 2023.1 compile with VCS 2022.06-SP2 on RHEL 8 x86_64
 Very Unsupported GCC 9.2.0 Compiler for VCS 2022.06 VCS 2022.06-SP2
 Very Very Unsupported GCC 7.3.0 Compiler for VCS 2020.03, VCS 2021.09, VCS 2022.06
 Very Very Very Unsupported GCC 6.2.0 Compiler for VCS 2018.09
