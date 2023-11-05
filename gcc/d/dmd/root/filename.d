@@ -1,7 +1,7 @@
 /**
  * Encapsulate path and file names.
  *
- * Copyright: Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright: Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:   Walter Bright, https://www.digitalmars.com
  * License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:    $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/root/filename.d, root/_filename.d)
@@ -14,13 +14,14 @@ module dmd.root.filename;
 import core.stdc.ctype;
 import core.stdc.errno;
 import core.stdc.string;
+
+import dmd.common.file;
+import dmd.common.outbuffer;
+
 import dmd.root.array;
 import dmd.root.file;
-import dmd.common.outbuffer;
-import dmd.common.file;
 import dmd.root.port;
 import dmd.root.rmem;
-import dmd.root.rootobject;
 import dmd.root.string;
 
 version (Posix)
@@ -41,9 +42,6 @@ version (Windows)
     extern (Windows) DWORD GetFullPathNameW(LPCWSTR, DWORD, LPWSTR, LPWSTR*) nothrow @nogc;
     extern (Windows) void SetLastError(DWORD) nothrow @nogc;
     extern (C) char* getcwd(char* buffer, size_t maxlen) nothrow;
-
-    // assume filenames encoded in system default Windows ANSI code page
-    private enum CodePage = CP_ACP;
 }
 
 version (CRuntime_Glibc)
@@ -85,6 +83,12 @@ nothrow:
         this.str = str.xarraydup;
     }
 
+    ///
+    extern (C++) static FileName create(const(char)* name) pure
+    {
+        return FileName(name.toDString);
+    }
+
     /// Compare two name according to the platform's rules (case sensitive or not)
     extern (C++) static bool equals(const(char)* name1, const(char)* name2) pure @nogc
     {
@@ -121,7 +125,7 @@ nothrow:
     }
 
     /// Ditto
-    extern (D) static bool absolute(const(char)[] name) pure @nogc
+    extern (D) static bool absolute(const(char)[] name) pure @nogc @safe
     {
         if (!name.length)
             return false;
@@ -274,7 +278,7 @@ nothrow:
     }
 
     /// Ditto
-    extern (D) static const(char)[] name(const(char)[] str) pure @nogc
+    extern (D) static const(char)[] name(const(char)[] str) pure @nogc @safe
     {
         foreach_reverse (idx, char e; str)
         {
@@ -1141,6 +1145,8 @@ version(Windows)
      */
     char[] toNarrowStringz(const(wchar)[] wide, char[] buffer = null) nothrow
     {
+        import dmd.common.file : CodePage;
+
         if (wide is null)
             return null;
 

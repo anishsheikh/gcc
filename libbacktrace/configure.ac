@@ -84,6 +84,8 @@ AM_CONDITIONAL(HAVE_DWZ, test "$DWZ" != "")
 LT_INIT
 AM_PROG_LIBTOOL
 
+AM_CONDITIONAL([ENABLE_DARWIN_AT_RPATH], [test x$enable_darwin_at_rpath = xyes])
+
 AC_SYS_LARGEFILE
 
 backtrace_supported=yes
@@ -406,6 +408,9 @@ fi
 if test "$have_getexecname" = "yes"; then
   AC_DEFINE(HAVE_GETEXECNAME, 1, [Define if getexecname is available.])
 fi
+
+# Check for _pgmptr variable, contains the executable filename on windows
+AC_CHECK_DECLS([_pgmptr])
 
 # Check for sysctl definitions.
 

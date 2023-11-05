@@ -17,9 +17,7 @@
 
 // 27.7.1.1  basic_stringbuf constructors  [lib.stringbuf.cons]
 
-// { dg-options "-std=gnu++2a" }
-// { dg-do run { target c++2a } }
-// { dg-require-effective-target cxx11_abi }
+// { dg-do run { target c++20 } }
 
 #include <sstream>
 #include <string_view>

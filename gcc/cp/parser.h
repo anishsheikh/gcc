@@ -107,6 +107,10 @@ struct GTY (()) cp_lexer {
   /* The next lexer in a linked list of lexers.  */
   struct cp_lexer *next;
 
+  /* Set for omp::decl attribute parsing to the decl to which it
+     appertains.  */
+  tree in_omp_decl_attribute;
+
   /* True if we should output debugging information.  */
   bool debugging_p;
 
@@ -404,7 +408,8 @@ struct GTY(()) cp_parser {
      identifiers) rather than an explicit template parameter list.  */
   bool fully_implicit_function_template_p;
 
-  /* TRUE if omp::directive or omp::sequence attributes may not appear.  */
+  /* TRUE if omp::directive, omp::decl or omp::sequence attributes may not
+     appear.  */
   bool omp_attrs_forbidden_p;
 
   /* Tracks the function's template parameter list when declaring a function
@@ -435,6 +440,9 @@ struct GTY(()) cp_parser {
      specification, if any, or UNKNOWN_LOCATION otherwise.  */
   location_t innermost_linkage_specification_location;
 
+  /* Pointer to state for parsing omp_loops.  Managed by
+     cp_parser_omp_for_loop in parser.cc and not used outside that file.  */
+  struct omp_for_parse_data * GTY((skip)) omp_for_parse_state;
 };
 
 /* In parser.cc  */

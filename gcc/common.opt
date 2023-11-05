@@ -582,6 +582,10 @@ Wcast-align=strict
 Common Var(warn_cast_align,2) Warning
 Warn about pointer casts which increase alignment.
 
+Wcomplain-wrong-lang
+Common Var(warn_complain_wrong_lang) Init(1) Warning
+Complain when a command-line option is valid, but not applicable to the current front end.
+
 Wcpp
 Common Var(warn_cpp) Init(1) Warning
 Warn when a #warning directive is encountered.
@@ -1006,6 +1010,10 @@ Driver Undocumented
 ; 18: Corrects errors in mangling of lambdas with additional context.
 ;     Default in G++ 13.
 ;
+; 19: Emits ABI tags if needed in structured binding mangled names.
+;     Ignores cv-quals on [[no_unique_object]] members.
+;     Default in G++ 14.
+;
 ; Additional positive integers will be assigned as new versions of
 ; the ABI become the default version of the ABI.
 fabi-version=
@@ -1204,6 +1212,10 @@ fchecking=
 Common Joined RejectNegative UInteger Var(flag_checking)
 Perform internal consistency checkings.
 
+fcanon-prefix-map
+Common Var(common_deferred_options) Defer
+For -f*-prefix-map= options compare canonicalized pathnames rather than just strings.
+
 fcode-hoisting
 Common Var(flag_code_hoisting) Optimization
 Enable code hoisting.
@@ -1239,6 +1251,10 @@ Do not perform optimizations increasing noticeably stack usage.
 fcprop-registers
 Common Var(flag_cprop_registers) Optimization
 Perform a register copy-propagation optimization pass.
+
+ffold-mem-offsets
+Target Bool Var(flag_fold_mem_offsets) Init(1)
+Fold instructions calculating memory offsets to the memory access instruction if possible.
 
 fcrossjumping
 Common Var(flag_crossjumping) Optimization
@@ -1494,6 +1510,25 @@ fdiagnostics-show-path-depths
 Common Var(flag_diagnostics_show_path_depths) Init(0)
 Show stack depths of events in paths.
 
+fdiagnostics-text-art-charset=
+Driver Common Joined RejectNegative Var(flag_diagnostics_text_art_charset) Enum(diagnostic_text_art_charset) Init(DIAGNOSTICS_TEXT_ART_CHARSET_EMOJI)
+-fdiagnostics-text-art-charset=[none|ascii|unicode|emoji]	Determine which characters to use in text arg diagrams.
+
+Enum
+Name(diagnostic_text_art_charset) Type(int)
+
+EnumValue
+Enum(diagnostic_text_art_charset) String(none) Value(DIAGNOSTICS_TEXT_ART_CHARSET_NONE)
+
+EnumValue
+Enum(diagnostic_text_art_charset) String(ascii) Value(DIAGNOSTICS_TEXT_ART_CHARSET_ASCII)
+
+EnumValue
+Enum(diagnostic_text_art_charset) String(unicode) Value(DIAGNOSTICS_TEXT_ART_CHARSET_UNICODE)
+
+EnumValue
+Enum(diagnostic_text_art_charset) String(emoji) Value(DIAGNOSTICS_TEXT_ART_CHARSET_EMOJI)
+
 fdiagnostics-minimum-margin-width=
 Common Joined UInteger Var(diagnostics_minimum_margin_width) Init(6)
 Set minimum width of left margin of source code when showing source.
@@ -1654,9 +1689,8 @@ Name(fp_contract_mode) Type(enum fp_contract_mode) UnknownError(unknown floating
 EnumValue
 Enum(fp_contract_mode) String(off) Value(FP_CONTRACT_OFF)
 
-; Not implemented, fall back to conservative FP_CONTRACT_OFF.
 EnumValue
-Enum(fp_contract_mode) String(on) Value(FP_CONTRACT_OFF)
+Enum(fp_contract_mode) String(on) Value(FP_CONTRACT_ON)
 
 EnumValue
 Enum(fp_contract_mode) String(fast) Value(FP_CONTRACT_FAST)
@@ -1793,6 +1827,41 @@ fharden-conditional-branches
 Common Var(flag_harden_conditional_branches) Optimization
 Harden conditional branches by checking reversed conditions.
 
+fharden-control-flow-redundancy
+Common Var(flag_harden_control_flow_redundancy) Optimization
+Harden control flow by recording and checking execution paths.
+
+fhardcfr-skip-leaf
+Common Var(flag_harden_control_flow_redundancy_skip_leaf) Optimization
+Disable CFR in leaf functions.
+
+fhardcfr-check-returning-calls
+Common Var(flag_harden_control_flow_redundancy_check_returning_calls) Init(-1) Optimization
+Check CFR execution paths also before calls followed by returns of their results.
+
+fhardcfr-check-exceptions
+Common Var(flag_harden_control_flow_redundancy_check_exceptions) Init(-1) Optimization
+Check CFR execution paths also when exiting a function through an exception.
+
+fhardcfr-check-noreturn-calls=
+Common Joined RejectNegative Enum(hardcfr_check_noreturn_calls) Var(flag_harden_control_flow_redundancy_check_noreturn) Init(HCFRNR_UNSPECIFIED) Optimization
+-fhardcfr-check-noreturn-calls=[always|no-xthrow|nothrow|never]	Check CFR execution paths also before calling noreturn functions.
+
+Enum
+Name(hardcfr_check_noreturn_calls) Type(enum hardcfr_noret) UnknownError(unknown hardcfr noreturn checking level %qs)
+
+EnumValue
+Enum(hardcfr_check_noreturn_calls) String(never) Value(HCFRNR_NEVER)
+
+EnumValue
+Enum(hardcfr_check_noreturn_calls) String(nothrow) Value(HCFRNR_NOTHROW)
+
+EnumValue
+Enum(hardcfr_check_noreturn_calls) String(no-xthrow) Value(HCFRNR_NO_XTHROW)
+
+EnumValue
+Enum(hardcfr_check_noreturn_calls) String(always) Value(HCFRNR_ALWAYS)
+
 ; Nonzero means ignore `#ident' directives.  0 means handle them.
 ; Generate position-independent code for executables if possible
 ; On SVR4 targets, it also controls whether or not to emit a
@@ -1878,7 +1947,7 @@ fcf-protection
 Common RejectNegative Alias(fcf-protection=,full)
 
 fcf-protection=
-Common Joined RejectNegative Enum(cf_protection_level) Var(flag_cf_protection) Init(CF_NONE)
+Common Joined RejectNegative Enum(cf_protection_level) EnumSet Var(flag_cf_protection) Init(CF_NONE)
 -fcf-protection=[full|branch|return|none|check]	Instrument functions with checks to verify jump/call/return control-flow transfer
 instructions have valid targets.
 
@@ -1886,19 +1955,19 @@ Enum
 Name(cf_protection_level) Type(enum cf_protection_level) UnknownError(unknown Control-Flow Protection Level %qs)
 
 EnumValue
-Enum(cf_protection_level) String(full) Value(CF_FULL)
+Enum(cf_protection_level) String(full) Value(CF_FULL) Set(1)
 
 EnumValue
-Enum(cf_protection_level) String(branch) Value(CF_BRANCH)
+Enum(cf_protection_level) String(branch) Value(CF_BRANCH) Set(2)
 
 EnumValue
-Enum(cf_protection_level) String(return) Value(CF_RETURN)
+Enum(cf_protection_level) String(return) Value(CF_RETURN) Set(3)
 
 EnumValue
-Enum(cf_protection_level) String(check) Value(CF_CHECK)
+Enum(cf_protection_level) String(check) Value(CF_CHECK) Set(4)
 
 EnumValue
-Enum(cf_protection_level) String(none) Value(CF_NONE)
+Enum(cf_protection_level) String(none) Value(CF_NONE) Set(1)
 
 finstrument-functions
 Common Var(flag_instrument_function_entry_exit,1)
@@ -2854,9 +2923,24 @@ Common Var(flag_tracer) Optimization
 Perform superblock formation via tail duplication.
 
 ftrampolines
-Common Var(flag_trampolines) Init(0)
+Common Var(flag_trampolines) Init(HEAP_TRAMPOLINES_INIT)
 For targets that normally need trampolines for nested functions, always
 generate them instead of using descriptors.
+
+ftrampoline-impl=
+Common Joined RejectNegative Enum(trampoline_impl) Var(flag_trampoline_impl) Init(HEAP_TRAMPOLINES_INIT ? TRAMPOLINE_IMPL_HEAP : TRAMPOLINE_IMPL_STACK)
+Whether trampolines are generated in executable memory rather than
+executable stack.
+
+Enum
+Name(trampoline_impl) Type(enum trampoline_impl) UnknownError(unknown trampoline implementation %qs)
+
+EnumValue
+Enum(trampoline_impl) String(stack) Value(TRAMPOLINE_IMPL_STACK)
+
+EnumValue
+Enum(trampoline_impl) String(heap) Value(TRAMPOLINE_IMPL_HEAP)
+
 
 ; Zero means that floating-point math operations cannot generate a
 ; (user-visible) trap.  This is the case, for example, in nonstop
@@ -3310,6 +3394,10 @@ gas-locview-support
 Common Driver Var(dwarf2out_as_locview_support)
 Assume assembler support for view in (DWARF2+) .loc directives.
 
+gcodeview
+Common Driver JoinedOrMissing
+Generate debug information in CodeView format.
+
 gcoff
 Common Driver WarnRemoved
 Does nothing.  Preserved for backward compatibility.
@@ -3341,11 +3429,11 @@ Common Driver RejectNegative JoinedOrMissing
 Generate BTF debug information at default level.
 
 gdwarf
-Common Driver JoinedOrMissing Negative(gdwarf-)
+Common Driver JoinedOrMissing RejectNegative
 Generate debug information in default version of DWARF format.
 
 gdwarf-
-Common Driver Joined UInteger Var(dwarf_version) Init(DWARF_VERSION_DEFAULT)
+Common Driver Joined UInteger Var(dwarf_version) Init(DWARF_VERSION_DEFAULT) RejectNegative
 Generate debug information in DWARF v2 (or later) format.
 
 gdwarf32
@@ -3357,7 +3445,7 @@ Common Driver Var(dwarf_offset_size,8) RejectNegative
 Use 64-bit DWARF format when emitting DWARF debug information.
 
 ggdb
-Common Driver JoinedOrMissing
+Common Driver JoinedOrMissing RejectNegative
 Generate debug information in default extended format.
 
 ginline-points
@@ -3424,7 +3512,7 @@ gvariable-location-views=incompat5
 Common Driver RejectNegative Var(debug_variable_location_views, -1) Init(2)
 
 gvms
-Common Driver JoinedOrMissing
+Common Driver JoinedOrMissing RejectNegative
 Generate debug information in VMS format.
 
 gxcoff

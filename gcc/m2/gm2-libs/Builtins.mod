@@ -28,6 +28,7 @@ IMPLEMENTATION MODULE Builtins ;
 
 IMPORT cbuiltin, wrapc ;
 
+
 PROCEDURE __ATTRIBUTE__ __BUILTIN__ ((__builtin_alloca)) alloca (i: CARDINAL) : ADDRESS ;
 BEGIN
    (* This routine will never be called as it allocates memory on
@@ -57,19 +58,35 @@ BEGIN
    RETURN cbuiltin.memcpy (dest, src, nbytes)
 END memcpy ;
 
-PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_isfinite)) isfinitef (x: SHORTREAL) : BOOLEAN ;
+
+PROCEDURE __ATTRIBUTE__ __BUILTIN__ ((__builtin_isnan)) isnanf (x: SHORTREAL) : INTEGER ;
 BEGIN
-   RETURN wrapc.isfinitef (x)=1
+   RETURN wrapc.isnanf (x)
+END isnanf ;
+
+PROCEDURE __ATTRIBUTE__ __BUILTIN__ ((__builtin_isnan)) isnan (x: REAL) : INTEGER ;
+BEGIN
+   RETURN wrapc.isnan (x)
+END isnan ;
+
+PROCEDURE __ATTRIBUTE__ __BUILTIN__ ((__builtin_isnan)) isnanl (x: LONGREAL) : INTEGER ;
+BEGIN
+   RETURN wrapc.isnanl (x)
+END isnanl ;
+
+PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_isfinite)) isfinitef (x: SHORTREAL) : INTEGER ;
+BEGIN
+   RETURN wrapc.isfinitef (x)
 END isfinitef ;
 
-PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_isfinite)) isfinite (x: REAL) : BOOLEAN ;
+PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_isfinite)) isfinite (x: REAL) : INTEGER ;
 BEGIN
-   RETURN wrapc.isfinite (x)=1
+   RETURN wrapc.isfinite (x)
 END isfinite ;
 
-PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_isfinite)) isfinitel (x: LONGREAL) : BOOLEAN ;
+PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_isfinite)) isfinitel (x: LONGREAL) : INTEGER ;
 BEGIN
-   RETURN wrapc.isfinitel (x)=1
+   RETURN wrapc.isfinitel (x)
 END isfinitel ;
 
 PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_sin)) sin (x: REAL) : REAL ;
@@ -267,12 +284,12 @@ BEGIN
    RETURN cbuiltin.nextafterl (x, y)
 END nextafterl ;
 
-PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_nexttoward)) nexttoward (x, y: REAL) : LONGREAL ;
+PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_nexttoward)) nexttoward (x: REAL; y: LONGREAL) : REAL ;
 BEGIN
    RETURN cbuiltin.nexttoward (x, y)
 END nexttoward ;
 
-PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_nexttowardf)) nexttowardf (x, y: SHORTREAL) : LONGREAL ;
+PROCEDURE __ATTRIBUTE__  __BUILTIN__ ((__builtin_nexttowardf)) nexttowardf (x: SHORTREAL; y: LONGREAL) : SHORTREAL ;
 BEGIN
    RETURN cbuiltin.nexttowardf (x, y)
 END nexttowardf ;

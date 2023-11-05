@@ -17,9 +17,9 @@
 
 SUFFIXES = .c .mod .def .o .obj .lo .a .la
 
-ACLOCAL_AMFLAGS = -I . -I .. -I ../config
+ACLOCAL_AMFLAGS = -I .. -I ../config
 
-VPATH = . @srcdir@ @srcdir@/../../gcc/m2/gm2-libs-pim
+VPATH = . @srcdir@ @srcdir@/../../gcc/m2/gm2-libs-log
 
 # Multilib support.
 MAKEOVERRIDES=
@@ -90,6 +90,7 @@ AM_MAKEFLAGS = \
 	"NM_FOR_TARGET=$(NM_FOR_TARGET)" \
 	"DESTDIR=$(DESTDIR)" \
 	"WERROR=$(WERROR)" \
+        "TARGET_LONGDOUBLE_ABI=$(TARGET_LONGDOUBLE_ABI)" \
         "TARGET_LIB_PATH_libgm2=$(TARGET_LIB_PATH_libgm2)"
 
 # Subdir rules rely on $(FLAGS_TO_PASS)
@@ -131,11 +132,20 @@ libm2log_la_SOURCES = $(M2MODS) Break.c
 
 libm2log_la_DEPENDENCIES = ../libm2pim/SYSTEM.def $(addsuffix .lo, $(basename $(libm2log_la_SOURCES)))
 libm2log_la_CFLAGS = -I. -DBUILD_GM2_LIBS -I@srcdir@/../
-libm2log_la_M2FLAGS = -I../libm2pim -I$(GM2_SRC)/gm2-libs-pim -I$(GM2_SRC)/gm2-libs -I$(GM2_SRC)/gm2-libs-iso
+libm2log_la_M2FLAGS = \
+ -fm2-pathname=m2pim -I../libm2pim \
+ -fm2-pathname=m2log -I$(GM2_SRC)/gm2-libs-log \
+ -fm2-pathname=m2pim -I$(GM2_SRC)/gm2-libs \
+ -fm2-pathname=m2iso -I$(GM2_SRC)/gm2-libs-iso \
+ -Wcase-enum -Wreturn-type -fcase -fm2-prefix=m2log \
+ $(TARGET_LONGDOUBLE_ABI)
 if TARGET_DARWIN
 libm2log_la_link_flags = -Wl,-undefined,dynamic_lookup
 else
 libm2log_la_link_flags =
+endif
+if ENABLE_DARWIN_AT_RPATH
+libm2log_la_link_flags += -nodefaultrpaths -Wl,-rpath,@loader_path/
 endif
 libm2log_la_LINK = $(LINK) -version-info $(libtool_VERSION) $(libm2log_la_link_flags)
 BUILT_SOURCES = ../libm2pim/SYSTEM.def
@@ -146,24 +156,21 @@ M2LIBDIR = /m2/m2log/
 	cd ../libm2pim ; $(MAKE) $(AM_MAKEFLAGS) SYSTEM.def
 
 .mod.lo:
-	$(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(GM2_FOR_TARGET) -c $(CFLAGS_FOR_TARGET) $(LIBCFLAGS) $(libm2log_la_M2FLAGS) $< -o $@
+	$(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile \
+                   $(GM2_FOR_TARGET) -c \
+                   $(CFLAGS_FOR_TARGET) $(LIBCFLAGS) $(libm2log_la_M2FLAGS) $< -o $@
 
 install-data-local: force
-	mkdir -p $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)
-	$(INSTALL_DATA) .libs/libm2log.la $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)
-	chmod 644 $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)libm2log.la
-	$(INSTALL_DATA) .libs/libm2log.a $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)
-	chmod 644 $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)libm2log.a
-	$(RANLIB) $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)libm2log.a
+	mkdir -p $(DESTDIR)$(inst_libdir)/$(M2LIBDIR)
 	for i in $(M2DEFS) $(M2MODS) ; do \
            if [ -f $$i ] ; then \
-              $(INSTALL_DATA) $$i '$(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)'; \
-           elif [ -f @srcdir@/../../gcc/m2/gm2-libs-pim/$$i ] ; then \
-              $(INSTALL_DATA) @srcdir@/../../gcc/m2/gm2-libs-pim/$$i '$(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)'; \
+              $(INSTALL_DATA) $$i '$(DESTDIR)$(inst_libdir)/$(M2LIBDIR)'; \
+           elif [ -f @srcdir@/../../gcc/m2/gm2-libs-log/$$i ] ; then \
+              $(INSTALL_DATA) @srcdir@/../../gcc/m2/gm2-libs-log/$$i '$(DESTDIR)$(inst_libdir)/$(M2LIBDIR)'; \
            else \
               echo "cannot find $$i" ; exit 1 ; \
            fi ; \
-           chmod 644 $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)$$i ; \
+           chmod 644 $(DESTDIR)$(inst_libdir)/$(M2LIBDIR)$$i ; \
 	done
 
 force:

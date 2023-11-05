@@ -4,7 +4,7 @@
  * Functions and objects dedicated to file I/O and management. TODO: Move here artifacts
  * from places such as root/ so both the frontend and the backend have access to them.
  *
- * Copyright: Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright: Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:   Walter Bright, https://www.digitalmars.com
  * License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:    $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/common/file.d, common/_file.d)
@@ -26,6 +26,14 @@ import core.sys.posix.unistd;
 import dmd.common.string;
 
 nothrow:
+
+version (Windows)
+{
+    import core.sys.windows.winnls : CP_ACP;
+
+    // assume filenames encoded in system default Windows ANSI code page
+    enum CodePage = CP_ACP;
+}
 
 /**
 Encapsulated management of a memory-mapped file.

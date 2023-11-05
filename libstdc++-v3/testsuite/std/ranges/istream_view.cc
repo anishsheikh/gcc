@@ -15,8 +15,7 @@
 // with this library; see the file COPYING3.  If not see
 // <http://www.gnu.org/licenses/>.
 
-// { dg-options "-std=gnu++2a" }
-// { dg-do run { target c++2a } }
+// { dg-do run { target c++20 } }
 
 #include <algorithm>
 #include <ranges>
@@ -115,6 +114,17 @@ test07()
   VERIFY( sum == 10 );
 }
 
+template<class T, class U>
+concept can_istream_view = requires (U u) { views::istream<T>(u); };
+
+void
+test08()
+{
+  // Verify SFINAE behavior.
+  struct S { };
+  static_assert(!can_istream_view<S, std::istringstream>);
+}
+
 int
 main()
 {
@@ -125,4 +135,5 @@ main()
   test05();
   test06();
   test07();
+  test08();
 }

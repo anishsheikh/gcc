@@ -1,4 +1,4 @@
-# configure.ac provides gm2spec.c with access to config values.
+# configure.ac provides gm2spec.cc with access to config values.
 
 # Copyright (C) 2001-2023 Free Software Foundation, Inc.
 # Contributed by Gaius Mulley <gaius.mulley@southwales.ac.uk>.
@@ -29,5 +29,12 @@ AC_CHECK_FUNCS([stpcpy])
 AC_CHECK_HEADERS(sys/types.h)
 AC_HEADER_DIRENT
 AC_CHECK_LIB([c],[opendir],[AC_DEFINE([HAVE_OPENDIR],[1],[found opendir])])
-AC_CONFIG_HEADERS(gm2config.h, [echo timestamp > stamp-h])
+
+AS_CASE([$target],[powerpc64le*],
+	[AC_DEFINE([M2C_LONGREAL_FLOAT128],[1],[use __float128 for LONGREAL])])
+
+AS_CASE([$target],[powerpc64le*],
+	[AC_DEFINE([M2C_LONGREAL_PPC64LE],[1],[target is ppc64le])])
+
+AC_CONFIG_HEADERS(gm2config.aci, [echo timestamp > stamp-h])
 AC_OUTPUT

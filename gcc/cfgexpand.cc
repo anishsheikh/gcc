@@ -3753,7 +3753,7 @@ expand_return (tree retval)
   tree retval_rhs;
 
   /* If function wants no value, give it none.  */
-  if (TREE_CODE (TREE_TYPE (TREE_TYPE (current_function_decl))) == VOID_TYPE)
+  if (VOID_TYPE_P (TREE_TYPE (TREE_TYPE (current_function_decl))))
     {
       expand_normal (retval);
       expand_null_return ();
@@ -4524,6 +4524,10 @@ expand_debug_expr (tree exp)
       /* Fall through.  */
 
     case INTEGER_CST:
+      if (TREE_CODE (TREE_TYPE (exp)) == BITINT_TYPE
+	  && TYPE_MODE (TREE_TYPE (exp)) == BLKmode)
+	return NULL;
+      /* FALLTHRU */
     case REAL_CST:
     case FIXED_CST:
       op0 = expand_expr (exp, NULL_RTX, mode, EXPAND_INITIALIZER);

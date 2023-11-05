@@ -427,14 +427,8 @@ grok_array_decl (location_t loc, tree array_expr, tree index_exp,
 	  return build_min_nt_loc (loc, ARRAY_REF, array_expr, index_exp,
 				   NULL_TREE, NULL_TREE);
 	}
-      array_expr = build_non_dependent_expr (array_expr);
-      if (index_exp)
-	index_exp = build_non_dependent_expr (index_exp);
-      else
-	{
-	  orig_index_exp_list = make_tree_vector_copy (*index_exp_list);
-	  make_args_non_dependent (*index_exp_list);
-	}
+      if (!index_exp)
+	orig_index_exp_list = make_tree_vector_copy (*index_exp_list);
     }
 
   type = TREE_TYPE (array_expr);
@@ -459,7 +453,10 @@ grok_array_decl (location_t loc, tree array_expr, tree index_exp,
 	{
 	  expr = build_op_subscript (loc, array_expr, index_exp_list,
 				     &overload, complain & tf_decltype);
-	  if (expr == error_mark_node)
+	  if (expr == error_mark_node
+	      /* Don't do the backward compatibility fallback in a SFINAE
+		 context.   */
+	      && (complain & tf_error))
 	    {
 	      tree idx = build_x_compound_expr_from_vec (*index_exp_list, NULL,
 							 tf_none);
@@ -474,11 +471,23 @@ grok_array_decl (location_t loc, tree array_expr, tree index_exp,
 					     &overload, complain);
 		}
 	      else
-		/* If it would be valid albeit deprecated expression in C++20,
-		   just pedwarn on it and treat it as if wrapped in ().  */
-		pedwarn (loc, OPT_Wcomma_subscript,
-			 "top-level comma expression in array subscript "
-			 "changed meaning in C++23");
+		{
+		  /* If it would be valid albeit deprecated expression in
+		     C++20, just pedwarn on it and treat it as if wrapped
+		     in ().  */
+		  pedwarn (loc, OPT_Wcomma_subscript,
+			   "top-level comma expression in array subscript "
+			   "changed meaning in C++23");
+		  if (processing_template_decl)
+		    {
+		      orig_index_exp
+			= build_x_compound_expr_from_vec (orig_index_exp_list,
+							  NULL, complain);
+		      if (orig_index_exp == error_mark_node)
+			expr = error_mark_node;
+		      release_tree_vector (orig_index_exp_list);
+		    }
+		}
 	    }
 	}
     }
@@ -498,6 +507,11 @@ grok_array_decl (location_t loc, tree array_expr, tree index_exp,
 
       if (index_exp == NULL_TREE)
 	{
+	  if (!(complain & tf_error))
+	    /* Don't do the backward compatibility fallback in a SFINAE
+	       context.  */
+	    return error_mark_node;
+
 	  if ((*index_exp_list)->is_empty ())
 	    {
 	      error_at (loc, "built-in subscript operator without expression "
@@ -519,6 +533,15 @@ grok_array_decl (location_t loc, tree array_expr, tree index_exp,
 	      return error_mark_node;
 	    }
 	  index_exp = idx;
+	  if (processing_template_decl)
+	    {
+	      orig_index_exp
+		= build_x_compound_expr_from_vec (orig_index_exp_list,
+						  NULL, complain);
+	      release_tree_vector (orig_index_exp_list);
+	      if (orig_index_exp == error_mark_node)
+		return error_mark_node;
+	    }
 	}
 
       if (TREE_CODE (TREE_TYPE (index_exp)) == ARRAY_TYPE)
@@ -540,8 +563,9 @@ grok_array_decl (location_t loc, tree array_expr, tree index_exp,
 	swapped = true, array_expr = p2, index_exp = i1;
       else
 	{
-	  error_at (loc, "invalid types %<%T[%T]%> for array subscript",
-		    type, TREE_TYPE (index_exp));
+	  if (complain & tf_error)
+	    error_at (loc, "invalid types %<%T[%T]%> for array subscript",
+		      type, TREE_TYPE (index_exp));
 	  return error_mark_node;
 	}
 
@@ -834,6 +858,7 @@ check_classfn (tree ctype, tree function, tree template_parms)
 
 	 So tell check_explicit_specialization to look for a match.  */
       SET_DECL_IMPLICIT_INSTANTIATION (function);
+      DECL_TEMPLATE_INFO (function) = build_template_info (fns, NULL_TREE);
       matched = function;
     }
 
@@ -1582,6 +1607,50 @@ cp_check_const_attributes (tree attributes)
     }
 }
 
+/* Copies hot or cold attributes to a function FN if present on the
+   encapsulating class, struct, or union TYPE.  */
+
+void
+maybe_propagate_warmth_attributes (tree fn, tree type)
+{
+  if (fn == NULL_TREE || type == NULL_TREE
+      || !(TREE_CODE (type) == RECORD_TYPE
+	   || TREE_CODE (type) == UNION_TYPE))
+    return;
+
+  tree has_cold_attr = lookup_attribute ("cold", TYPE_ATTRIBUTES (type));
+  tree has_hot_attr = lookup_attribute ("hot", TYPE_ATTRIBUTES (type));
+
+  if (has_cold_attr || has_hot_attr)
+    {
+      /* Transparently ignore the new warmth attribute if it
+	 conflicts with a present function attribute.  Otherwise
+	 decl_attribute would still honour the present attribute,
+	 but producing an undesired warning in the process.  */
+
+      if (has_cold_attr)
+	{
+	  if (lookup_attribute ("hot", DECL_ATTRIBUTES (fn)) == NULL)
+	    {
+	      tree cold_cons
+		= tree_cons (get_identifier ("cold"), NULL, NULL);
+
+	      decl_attributes (&fn, cold_cons, 0);
+	    }
+	}
+      else if (has_hot_attr)
+	{
+	  if (lookup_attribute ("cold", DECL_ATTRIBUTES (fn)) == NULL)
+	    {
+	      tree hot_cons
+		= tree_cons (get_identifier ("hot"), NULL, NULL);
+
+	      decl_attributes (&fn, hot_cons, 0);
+	    }
+	}
+    }
+}
+
 /* Return the last pushed declaration for the symbol DECL or NULL
    when no such declaration exists.  */
 
@@ -1592,6 +1661,11 @@ find_last_decl (tree decl)
 
   if (tree name = DECL_P (decl) ? DECL_NAME (decl) : NULL_TREE)
     {
+      /* Template specializations are matched elsewhere.  */
+      if (DECL_LANG_SPECIFIC (decl)
+	  && DECL_USE_TEMPLATE (decl))
+	return NULL_TREE;
+
       /* Look up the declaration in its scope.  */
       tree pushed_scope = NULL_TREE;
       if (tree ctype = DECL_CONTEXT (decl))
@@ -1711,16 +1785,34 @@ cplus_decl_attributes (tree *decl, tree attributes, int flags)
 	    {
 	      tree name = get_attribute_name (*pa);
 	      if (is_attribute_p ("directive", name)
-		  || is_attribute_p ("sequence", name))
+		  || is_attribute_p ("sequence", name)
+		  || is_attribute_p ("decl", name))
 		{
-		  if (!diagnosed)
+		  const char *p = NULL;
+		  if (TREE_VALUE (*pa) == NULL_TREE)
+		    p = IDENTIFIER_POINTER (name);
+		  for (tree a = TREE_VALUE (*pa); a; a = TREE_CHAIN (a))
 		    {
-		      error ("%<omp::%E%> not allowed to be specified in this "
-			     "context", name);
+		      tree d = TREE_VALUE (a);
+		      gcc_assert (TREE_CODE (d) == DEFERRED_PARSE);
+		      if (TREE_PUBLIC (d)
+			  && (VAR_P (*decl)
+			      || TREE_CODE (*decl) == FUNCTION_DECL)
+			  && cp_maybe_parse_omp_decl (*decl, d))
+			continue;
+		      p = TREE_PUBLIC (d) ? "decl" : "directive";
+		    }
+		  if (p && !diagnosed)
+		    {
+		      error ("%<omp::%s%> not allowed to be specified in "
+			     "this context", p);
 		      diagnosed = true;
 		    }
-		  *pa = TREE_CHAIN (*pa);
-		  continue;
+		  if (p)
+		    {
+		      *pa = TREE_CHAIN (*pa);
+		      continue;
+		    }
 		}
 	    }
 	  pa = &TREE_CHAIN (*pa);
@@ -3623,7 +3715,7 @@ var_defined_without_dynamic_init (tree var)
 /* Returns true iff VAR is a variable that needs uses to be
    wrapped for possible dynamic initialization.  */
 
-static bool
+bool
 var_needs_tls_wrapper (tree var)
 {
   return (!error_operand_p (var)
@@ -4742,15 +4834,24 @@ record_mangling (tree decl, bool need_warning)
     = mangled_decls->find_slot_with_hash (id, IDENTIFIER_HASH_VALUE (id),
 					  INSERT);
 
-  /* If this is already an alias, remove the alias, because the real
+  /* If this is already an alias, cancel the alias, because the real
      decl takes precedence.  */
   if (*slot && DECL_ARTIFICIAL (*slot) && DECL_IGNORED_P (*slot))
-    if (symtab_node *n = symtab_node::get (*slot))
-      if (n->cpp_implicit_alias)
+    {
+      if (symtab_node *n = symtab_node::get (*slot))
 	{
-	  n->remove ();
-	  *slot = NULL_TREE;
+	  if (n->cpp_implicit_alias)
+	    /* Actually removing the node isn't safe if other code is already
+	       holding a pointer to it, so just neutralize it.  */
+	    n->reset ();
 	}
+      else
+	/* analyze_functions might have already removed the alias from the
+	   symbol table if it's internal.  */
+	gcc_checking_assert (!TREE_PUBLIC (*slot));
+
+      *slot = NULL_TREE;
+    }
 
   if (!*slot)
     *slot = decl;
@@ -4982,7 +5083,7 @@ c_parse_final_cleanups (void)
 	 get emitted.  */
       for (i = unemitted_tinfo_decls->length ();
 	   unemitted_tinfo_decls->iterate (--i, &t);)
-	if (emit_tinfo_decl (t))
+	if (DECL_INITIAL (t) || emit_tinfo_decl (t))
 	  {
 	    reconsider = true;
 	    unemitted_tinfo_decls->unordered_remove (i);
@@ -5328,18 +5429,13 @@ build_offset_ref_call_from_tree (tree fn, vec<tree, va_gc> **args,
       orig_args = make_tree_vector_copy (*args);
 
       /* Transform the arguments and add the implicit "this"
-	 parameter.  That must be done before the FN is transformed
-	 because we depend on the form of FN.  */
-      make_args_non_dependent (*args);
-      object = build_non_dependent_expr (object);
+	 parameter.  */
       if (TREE_CODE (TREE_TYPE (fn)) == METHOD_TYPE)
 	{
 	  if (TREE_CODE (fn) == DOTSTAR_EXPR)
 	    object = cp_build_addr_expr (object, complain);
 	  vec_safe_insert (*args, 0, object);
 	}
-      /* Now that the arguments are done, transform FN.  */
-      fn = build_non_dependent_expr (fn);
     }
 
   /* A qualified name corresponding to a bound pointer-to-member is
@@ -5746,7 +5842,7 @@ mark_used (tree decl, tsubst_flags_t complain /* = tf_warning_or_error */)
 	  && DECL_OMP_DECLARE_REDUCTION_P (decl)))
     maybe_instantiate_decl (decl);
 
-  if (processing_template_decl || in_template_function ())
+  if (processing_template_decl || in_template_context)
     return true;
 
   /* Check this too in case we're within instantiate_non_dependent_expr.  */

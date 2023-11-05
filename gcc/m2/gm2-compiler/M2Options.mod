@@ -24,16 +24,19 @@ IMPLEMENTATION MODULE M2Options ;
 
 IMPORT CmdArgs ;
 FROM SArgs IMPORT GetArg, Narg ;
-FROM M2Search IMPORT PrependSearchPath, SetDefExtension, SetModExtension ;
-FROM M2Printf IMPORT printf0, printf1 ;
-FROM libc IMPORT exit ;
+FROM M2Search IMPORT SetDefExtension, SetModExtension ;
+FROM PathName IMPORT DumpPathName, AddInclude ;
+FROM M2Printf IMPORT printf0, printf1, fprintf1 ;
+FROM FIO IMPORT StdErr ;
+FROM libc IMPORT exit, printf ;
 FROM Debug IMPORT Halt ;
 FROM m2linemap IMPORT location_t ;
 FROM m2configure IMPORT FullPathCPP ;
 
+
 FROM DynamicStrings IMPORT String, Length, InitString, Mark, Slice, EqualArray,
                            InitStringCharStar, ConCatChar, ConCat, KillString,
-                           Dup, string,
+                           Dup, string, char,
                            PushAllocation, PopAllocationExemption,
                            InitStringDB, InitStringCharStarDB,
                            InitStringCharDB, MultDB, DupDB, SliceDB ;
@@ -49,14 +52,28 @@ FROM DynamicStrings IMPORT String, Length, InitString, Mark, Slice, EqualArray,
 
 CONST
    Debugging = FALSE ;
+   DefaultRuntimeModuleOverride = "m2iso:RTentity,m2iso:Storage,m2iso:SYSTEM,m2iso:M2RTS,m2iso:RTExceptions,m2iso:IOLink" ;
 
 VAR
+   M2Prefix,
+   M2PathName,
    Barg,
+   MFarg,
+   MTFlag,
+   MQFlag,
+   DepTarget,
+   CmdLineObj,
    SaveTempsDir,
+   DumpDir,
    GenModuleListFilename,
    UselistFilename,
    RuntimeModuleOverride,
    CppArgs              : String ;
+   MFlag,
+   MMFlag,
+   MPFlag,
+   MDFlag,
+   MMDFlag,
    UselistFlag,
    CC1Quiet,
    SeenSources          : BOOLEAN ;
@@ -110,6 +127,49 @@ END DSdbExit ;
 
 
 (*
+   SetM2Prefix - assign arg to M2Prefix.
+*)
+
+PROCEDURE SetM2Prefix (arg: ADDRESS) ;
+BEGIN
+   M2Prefix := KillString (M2Prefix) ;
+   M2Prefix := InitStringCharStar (arg)
+END SetM2Prefix ;
+
+
+(*
+   GetM2Prefix - return M2Prefix as a C string.
+*)
+
+PROCEDURE GetM2Prefix () : ADDRESS ;
+BEGIN
+   RETURN string (M2Prefix)
+END GetM2Prefix ;
+
+
+(*
+   SetM2PathName - assign arg to M2PathName.
+*)
+
+PROCEDURE SetM2PathName (arg: ADDRESS) ;
+BEGIN
+   M2PathName := KillString (M2PathName) ;
+   M2PathName := InitStringCharStar (arg) ;
+   (* fprintf1 (StdErr, "M2PathName = %s\n", M2PathName)  *)
+END SetM2PathName ;
+
+
+(*
+   GetM2PathName - return M2PathName as a C string.
+*)
+
+PROCEDURE GetM2PathName () : ADDRESS ;
+BEGIN
+   RETURN string (M2PathName)
+END GetM2PathName ;
+
+
+(*
    SetB - assigns Barg to arg.
 *)
 
@@ -128,6 +188,249 @@ PROCEDURE GetB () : ADDRESS ;
 BEGIN
    RETURN string (Barg)
 END GetB ;
+
+
+(*
+   SetM - set the MFlag.
+*)
+
+PROCEDURE SetM (value: BOOLEAN) ;
+BEGIN
+   MFlag := value
+END SetM ;
+
+
+(*
+   GetM - set the MFlag.
+*)
+
+PROCEDURE GetM () : BOOLEAN ;
+BEGIN
+   RETURN MFlag
+END GetM ;
+
+
+(*
+   SetMM - set the MMFlag.
+*)
+
+PROCEDURE SetMM (value: BOOLEAN) ;
+BEGIN
+   MMFlag := value
+END SetMM ;
+
+
+(*
+   GetMM - set the MMFlag.
+*)
+
+PROCEDURE GetMM () : BOOLEAN ;
+BEGIN
+   RETURN MMFlag
+END GetMM ;
+
+
+(*
+   SetMD - set the MDFlag to value.
+*)
+
+PROCEDURE SetMD (value: BOOLEAN) ;
+BEGIN
+   MDFlag := value
+END SetMD ;
+
+
+(*
+   GetMD - return the MDFlag.
+*)
+
+PROCEDURE GetMD () : BOOLEAN ;
+BEGIN
+   RETURN MDFlag
+END GetMD ;
+
+
+(*
+   SetMMD - set the MMDFlag to value.
+*)
+
+PROCEDURE SetMMD (value: BOOLEAN) ;
+BEGIN
+   MMDFlag := value
+END SetMMD ;
+
+
+(*
+   GetMMD - return the MMDFlag.
+*)
+
+PROCEDURE GetMMD () : BOOLEAN ;
+BEGIN
+   RETURN MMDFlag
+END GetMMD ;
+
+
+(*
+   SetMF - assigns MFarg to the filename from arg.
+*)
+
+PROCEDURE SetMF (arg: ADDRESS) ;
+BEGIN
+   MFarg := KillString (MFarg) ;
+   MFarg := InitStringCharStar (arg)
+END SetMF ;
+
+
+(*
+   GetMF - returns MFarg or NIL if never set.
+*)
+
+PROCEDURE GetMF () : ADDRESS ;
+BEGIN
+   RETURN string (MFarg)
+END GetMF ;
+
+
+(*
+   SetMP - set the MPflag to value.
+*)
+
+PROCEDURE SetMP (value: BOOLEAN) ;
+BEGIN
+   MPFlag := value
+END SetMP ;
+
+
+(*
+   GetMP - get the MPflag.
+*)
+
+PROCEDURE GetMP () : BOOLEAN ;
+BEGIN
+   RETURN MPFlag
+END GetMP ;
+
+
+(*
+   AddWord - concats a word to sentence inserting a space if necessary.
+             sentence is returned.  sentence will be created if it is NIL.
+*)
+
+PROCEDURE AddWord (sentence, word: String) : String ;
+BEGIN
+   IF word # NIL
+   THEN
+      IF sentence = NIL
+      THEN
+         sentence := Dup (word)
+      ELSE
+         sentence := ConCatChar (sentence, ' ') ;
+         sentence := ConCat (sentence, word)
+      END
+   END ;
+   RETURN sentence
+END AddWord ;
+
+
+(*
+   QuoteTarget - quote the '$' character.
+*)
+
+PROCEDURE QuoteTarget (target: String) : String ;
+VAR
+   quoted: String ;
+   i, n  : CARDINAL ;
+BEGIN
+   quoted := InitString ('') ;
+   i := 0 ;
+   n := Length (target) ;
+   WHILE i < n DO
+      CASE char (target, i) OF
+
+      '$':  quoted := ConCat (quoted, Mark (InitString ('$$')))
+
+      ELSE
+         quoted := ConCatChar (quoted, char (target, i))
+      END ;
+      INC (i)
+   END ;
+   RETURN quoted
+END QuoteTarget ;
+
+
+(*
+   SetMQ - adds a quoted target arg to the DepTarget sentence.
+*)
+
+PROCEDURE SetMQ (arg: ADDRESS) ;
+BEGIN
+   DepTarget := AddWord (DepTarget, QuoteTarget (InitStringCharStar (arg))) ;
+   MQFlag := AddWord (MQFlag, Mark (InitString ('-MQ'))) ;
+   MQFlag := AddWord (MQFlag, Mark (InitStringCharStar (arg)))
+END SetMQ ;
+
+
+(*
+   GetMQ - returns a C string containing all the -MQ arg values.
+*)
+
+PROCEDURE GetMQ () : ADDRESS ;
+BEGIN
+   RETURN string (MQFlag)
+END GetMQ ;
+
+
+(*
+   SetMT - adds a target arg to the DepTarget sentence.
+*)
+
+PROCEDURE SetMT (arg: ADDRESS) ;
+BEGIN
+   DepTarget := AddWord (DepTarget, InitStringCharStar (arg)) ;
+   MTFlag := AddWord (MTFlag, Mark (InitString ('-MT'))) ;
+   MTFlag := AddWord (MTFlag, Mark (InitStringCharStar (arg)))
+END SetMT ;
+
+
+(*
+   GetMT - returns a C string containing all the -MT arg values.
+*)
+
+PROCEDURE GetMT () : ADDRESS ;
+BEGIN
+   RETURN string (MTFlag)
+END GetMT ;
+
+
+(*
+   GetDepTarget - returns the DepTarget as a C string.
+*)
+
+PROCEDURE GetDepTarget () : ADDRESS ;
+BEGIN
+   RETURN string (DepTarget)
+END GetDepTarget ;
+
+
+(*
+   SetObj - assigns CmdLineObj to the filename from arg.
+*)
+
+PROCEDURE SetObj (arg: ADDRESS) ;
+BEGIN
+   CmdLineObj := KillString (CmdLineObj) ;
+   CmdLineObj := InitStringCharStar (arg)
+END SetObj ;
+
+
+(*
+   GetObj - returns CmdLineObj filename as a c-string or NIL if it was never set.
+*)
+
+PROCEDURE GetObj () : ADDRESS ;
+BEGIN
+   RETURN string (CmdLineObj)
+END GetObj ;
 
 
 (*
@@ -278,6 +581,7 @@ END SetCheckAll ;
 
 (*
    SetAutoInit - -fauto-init turns on automatic initialization of pointers to NIL.
+                  TRUE is returned.
 *)
 
 PROCEDURE SetAutoInit (value: BOOLEAN) ;
@@ -360,6 +664,25 @@ PROCEDURE GetCpp () : BOOLEAN ;
 BEGIN
    RETURN CPreProcessor
 END GetCpp ;
+
+
+(*
+   SetPPOnly - set the PPonly (preprocess only) to value.
+*)
+
+PROCEDURE SetPPOnly (value: BOOLEAN) ;
+BEGIN
+   PPonly := value
+END SetPPOnly ;
+
+(*
+   GetPPOnly - get the PPonly (preprocess only).
+*)
+
+PROCEDURE GetPPOnly () : BOOLEAN ;
+BEGIN
+   RETURN PPonly
+END GetPPOnly ;
 
 
 (*
@@ -786,41 +1109,43 @@ PROCEDURE SetSearchPath (arg: ADDRESS) ;
 VAR
    s: String ;
 BEGIN
-   s := InitStringCharStar(arg) ;
+   s := InitStringCharStar (arg) ;
+   AddInclude (M2PathName, s) ;
    IF Debugging
    THEN
-      printf1("setting search path to: %s\n", s)
+      DumpPathName ("path name entries: ")
    END ;
-   PrependSearchPath(s) ;
-   s := KillString(s)
+   s := KillString (s)
 END SetSearchPath ;
 
 
 (*
-   setdefextension -
+   setdefextension - set the source file definition module extension to arg.
+                     This should include the . and by default it is set to .def.
 *)
 
 PROCEDURE setdefextension (arg: ADDRESS) ;
 VAR
    s: String ;
 BEGIN
-   s := InitStringCharStar(arg) ;
-   SetDefExtension(s) ;
-   s := KillString(s)
+   s := InitStringCharStar (arg) ;
+   SetDefExtension (s) ;
+   s := KillString (s)
 END setdefextension ;
 
 
 (*
-   setmodextension -
+   setmodextension - set the source file module extension to arg.
+                     This should include the . and by default it is set to .mod.
 *)
 
 PROCEDURE setmodextension (arg: ADDRESS) ;
 VAR
    s: String ;
 BEGIN
-   s := InitStringCharStar(arg) ;
-   SetModExtension(s) ;
-   s := KillString(s)
+   s := InitStringCharStar (arg) ;
+   SetModExtension (s) ;
+   s := KillString (s)
 END setmodextension ;
 
 
@@ -1026,9 +1351,11 @@ PROCEDURE SetWall (value: BOOLEAN) ;
 BEGIN
    UnusedVariableChecking  := value ;
    UnusedParameterChecking := value ;
+   UninitVariableChecking := value ;
    PedanticCast := value ;
    PedanticParamNames := value ;
-   StyleChecking := value
+   StyleChecking := value ;
+   CaseEnumChecking := value
 END SetWall ;
 
 
@@ -1048,7 +1375,8 @@ END SetSaveTemps ;
 
 PROCEDURE SetSaveTempsDir (arg: ADDRESS) ;
 BEGIN
-   SaveTempsDir := InitStringCharStar (arg)
+   SaveTempsDir := InitStringCharStar (arg) ;
+   SaveTemps := TRUE
 END SetSaveTempsDir ;
 
 
@@ -1061,6 +1389,25 @@ BEGIN
    RETURN SaveTempsDir
 END GetSaveTempsDir ;
 
+
+(*
+   SetDumpDir - Set the dump dir.
+*)
+
+PROCEDURE SetDumpDir (arg: ADDRESS) ;
+BEGIN
+   DumpDir := InitStringCharStar (arg)
+END SetDumpDir ;
+
+
+(*
+   GetDumpDir - return DumpDir or NIL.
+*)
+
+PROCEDURE GetDumpDir () : String ;
+BEGIN
+   RETURN DumpDir
+END GetDumpDir ;
 
 (*
    SetScaffoldDynamic - set the -fscaffold-dynamic flag.
@@ -1140,7 +1487,7 @@ END SetRuntimeModuleOverride ;
 
 PROCEDURE GetRuntimeModuleOverride () : ADDRESS ;
 BEGIN
-   RETURN RuntimeModuleOverride
+   RETURN string (RuntimeModuleOverride)
 END GetRuntimeModuleOverride ;
 
 
@@ -1180,70 +1527,152 @@ BEGIN
 END SetShared ;
 
 
+(*
+   SetUninitVariableChecking - sets the UninitVariableChecking and
+                               UninitVariableConditionalChecking flags to value
+                               depending upon arg string.  The arg string
+                               can be: "all", "known,cond", "cond,known", "known"
+                               or "cond".
+*)
+
+PROCEDURE SetUninitVariableChecking (value: BOOLEAN; arg: ADDRESS) : INTEGER ;
+VAR
+   s: String ;
 BEGIN
-   cflag                        := FALSE ;  (* -c.  *)
-   RuntimeModuleOverride        := NIL ;
-   CppArgs                      := InitString ('') ;
-   Pim                          :=  TRUE ;
-   Pim2                         := FALSE ;
-   Pim3                         := FALSE ;
-   Pim4                         :=  TRUE ;
-   PositiveModFloorDiv          := FALSE ;
-   Iso                          := FALSE ;
-   SeenSources                  := FALSE ;
-   Statistics                   := FALSE ;
-   StyleChecking                := FALSE ;
-   CompilerDebugging            := FALSE ;
-   GenerateDebugging            := FALSE ;
-   Optimizing                   := FALSE ;
-   Pedantic                     := FALSE ;
-   Verbose                      := FALSE ;
-   Quiet                        :=  TRUE ;
-   CC1Quiet                     :=  TRUE ;
-   Profiling                    := FALSE ;
-   DisplayQuadruples            := FALSE ;
-   OptimizeBasicBlock           := FALSE ;
-   OptimizeUncalledProcedures   := FALSE ;
-   OptimizeCommonSubExpressions := FALSE ;
-   NilChecking                  := FALSE ;
-   WholeDivChecking             := FALSE ;
-   WholeValueChecking           := FALSE ;
-   FloatValueChecking           := FALSE ;
-   IndexChecking                := FALSE ;
-   RangeChecking                := FALSE ;
-   ReturnChecking               := FALSE ;
-   CaseElseChecking             := FALSE ;
-   CPreProcessor                := FALSE ;
-   LineDirectives               := FALSE ;
-   ExtendedOpaque               := FALSE ;
-   UnboundedByReference         := FALSE ;
-   VerboseUnbounded             := FALSE ;
-   PedanticParamNames           := FALSE ;
-   PedanticCast                 := FALSE ;
-   Xcode                        := FALSE ;
-   DumpSystemExports            := FALSE ;
-   GenerateSwig                 := FALSE ;
-   Exceptions                   :=  TRUE ;
-   DebugBuiltins                := FALSE ;
-   ForcedLocation               := FALSE ;
-   WholeProgram                 := FALSE ;
-   DebugTraceQuad               := FALSE ;
-   DebugTraceAPI                := FALSE ;
-   DebugFunctionLineNumbers     := FALSE ;
-   GenerateStatementNote        := FALSE ;
-   LowerCaseKeywords            := FALSE ;
-   UnusedVariableChecking       := FALSE ;
-   UnusedParameterChecking      := FALSE ;
-   StrictTypeChecking           := TRUE ;
-   AutoInit                     := FALSE ;
-   SaveTemps                    := FALSE ;
-   ScaffoldDynamic              := TRUE ;
-   ScaffoldStatic               := FALSE ;
-   ScaffoldMain                 := FALSE ;
-   UselistFilename              := NIL ;
-   GenModuleList                := FALSE ;
-   GenModuleListFilename        := NIL ;
-   SharedFlag                   := FALSE ;
-   Barg                         := NIL ;
-   SaveTempsDir                 := NIL
+   IF Debugging
+   THEN
+      IF value
+      THEN
+         printf ("SetUninitVariableChecking (TRUE, %s)\n", arg)
+      ELSE
+         printf ("SetUninitVariableChecking (FALSE, %s)\n", arg)
+      END
+   END ;
+   s := InitStringCharStar (arg) ;
+   IF EqualArray (s, "all") OR
+      EqualArray (s, "known,cond") OR
+      EqualArray (s, "cond,known")
+   THEN
+      UninitVariableChecking := value ;
+      UninitVariableConditionalChecking := value ;
+      s := KillString (s) ;
+      RETURN 1
+   ELSIF EqualArray (s, "known")
+   THEN
+      UninitVariableChecking := value ;
+      s := KillString (s) ;
+      RETURN 1
+   ELSIF EqualArray (s, "cond")
+   THEN
+      UninitVariableConditionalChecking := value ;
+      s := KillString (s) ;
+      RETURN 1
+   ELSE
+      s := KillString (s) ;
+      RETURN 0
+   END
+END SetUninitVariableChecking ;
+
+
+(*
+   SetCaseEnumChecking - sets the CaseEnumChecking to value.
+*)
+
+PROCEDURE SetCaseEnumChecking (value: BOOLEAN) ;
+BEGIN
+   CaseEnumChecking := value
+END SetCaseEnumChecking ;
+
+
+(*
+   SetDebugBuiltins - sets the DebugBuiltins to value.
+*)
+
+PROCEDURE SetDebugBuiltins (value: BOOLEAN) ;
+BEGIN
+   DebugBuiltins := value
+END SetDebugBuiltins ;
+
+
+BEGIN
+   cflag                             := FALSE ;  (* -c.  *)
+   RuntimeModuleOverride             := InitString (DefaultRuntimeModuleOverride) ;
+   CppArgs                           := InitString ('') ;
+   Pim                               :=  TRUE ;
+   Pim2                              := FALSE ;
+   Pim3                              := FALSE ;
+   Pim4                              :=  TRUE ;
+   PositiveModFloorDiv               := FALSE ;
+   Iso                               := FALSE ;
+   SeenSources                       := FALSE ;
+   Statistics                        := FALSE ;
+   StyleChecking                     := FALSE ;
+   CompilerDebugging                 := FALSE ;
+   GenerateDebugging                 := FALSE ;
+   Optimizing                        := FALSE ;
+   Pedantic                          := FALSE ;
+   Verbose                           := FALSE ;
+   Quiet                             :=  TRUE ;
+   CC1Quiet                          :=  TRUE ;
+   Profiling                         := FALSE ;
+   DisplayQuadruples                 := FALSE ;
+   OptimizeBasicBlock                := FALSE ;
+   OptimizeUncalledProcedures        := FALSE ;
+   OptimizeCommonSubExpressions      := FALSE ;
+   NilChecking                       := FALSE ;
+   WholeDivChecking                  := FALSE ;
+   WholeValueChecking                := FALSE ;
+   FloatValueChecking                := FALSE ;
+   IndexChecking                     := FALSE ;
+   RangeChecking                     := FALSE ;
+   ReturnChecking                    := FALSE ;
+   CaseElseChecking                  := FALSE ;
+   CPreProcessor                     := FALSE ;
+   LineDirectives                    := FALSE ;
+   ExtendedOpaque                    := FALSE ;
+   UnboundedByReference              := FALSE ;
+   VerboseUnbounded                  := FALSE ;
+   PedanticParamNames                := FALSE ;
+   PedanticCast                      := FALSE ;
+   Xcode                             := FALSE ;
+   DumpSystemExports                 := FALSE ;
+   GenerateSwig                      := FALSE ;
+   Exceptions                        :=  TRUE ;
+   DebugBuiltins                     := FALSE ;
+   ForcedLocation                    := FALSE ;
+   WholeProgram                      := FALSE ;
+   DebugTraceQuad                    := FALSE ;
+   DebugTraceAPI                     := FALSE ;
+   DebugFunctionLineNumbers          := FALSE ;
+   GenerateStatementNote             := FALSE ;
+   LowerCaseKeywords                 := FALSE ;
+   UnusedVariableChecking            := FALSE ;
+   UnusedParameterChecking           := FALSE ;
+   StrictTypeChecking                := TRUE ;
+   AutoInit                          := FALSE ;
+   SaveTemps                         := FALSE ;
+   ScaffoldDynamic                   := TRUE ;
+   ScaffoldStatic                    := FALSE ;
+   ScaffoldMain                      := FALSE ;
+   UselistFilename                   := NIL ;
+   GenModuleList                     := FALSE ;
+   GenModuleListFilename             := NIL ;
+   SharedFlag                        := FALSE ;
+   Barg                              := NIL ;
+   MDFlag                            := FALSE ;
+   MMDFlag                           := FALSE ;
+   DepTarget                         := NIL ;
+   MPFlag                            := FALSE ;
+   SaveTempsDir                      := NIL ;
+   DumpDir                           := NIL ;
+   UninitVariableChecking            := FALSE ;
+   UninitVariableConditionalChecking := FALSE ;
+   CaseEnumChecking                  := FALSE ;
+   MFlag                             := FALSE ;
+   MMFlag                            := FALSE ;
+   MFarg                             := NIL ;
+   MTFlag                            := NIL ;
+   MQFlag                            := NIL ;
+   M2Prefix                          := InitString ('') ;
+   M2PathName                        := InitString ('')
 END M2Options.

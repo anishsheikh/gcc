@@ -42,6 +42,7 @@
    (APSRQ_REGNUM    104)	; Q bit pseudo register
    (APSRGE_REGNUM   105)	; GE bits pseudo register
    (VPR_REGNUM      106)	; Vector Predication Register - MVE register.
+   (RA_AUTH_CODE    107)	; Pseudo register to save PAC.
   ]
 )
 ;; 3rd operand to select_dominance_cc_mode
@@ -7554,7 +7555,7 @@
       && !arm_const_double_rtx (operands[1])
       && !(TARGET_VFP_DOUBLE && vfp3_const_double_rtx (operands[1])))
     {
-      rtx clobreg = gen_reg_rtx (DFmode);
+      rtx clobreg = gen_reg_rtx (DImode);
       emit_insn (gen_no_literal_pool_df_immediate (operands[0], operands[1],
 						   clobreg));
       DONE;
@@ -9513,7 +9514,9 @@
    (match_operand:SI 2 "const_int_operand")	; total range
    (match_operand:SI 3 "" "")			; table label
    (match_operand:SI 4 "" "")]			; Out of range label
-  "(TARGET_32BIT || optimize_size || flag_pic) && !target_pure_code"
+   "(TARGET_ARM
+     || (!target_pure_code
+         && (TARGET_THUMB2 || optimize_size || flag_pic)))"
   "
   {
     enum insn_code code;
@@ -9555,13 +9558,15 @@
 		(match_dup 4)
 		(label_ref:SI (match_operand 3 ""))))
 	      (clobber (reg:CC CC_REGNUM))
+	      (clobber (match_scratch:SI 5))
 	      (use (label_ref:SI (match_operand 2 "")))])]
   "TARGET_ARM"
 {
-  operands[4] = gen_rtx_MULT (SImode, operands[0], GEN_INT (4));
-  operands[4] = gen_rtx_PLUS (SImode, operands[4],
-			      gen_rtx_LABEL_REF (SImode, operands[2]));
-  operands[4] = gen_rtx_MEM (SImode, operands[4]);
+  rtx vec_table_ref = force_reg (SImode, gen_rtx_LABEL_REF (SImode, operands[2]));
+  rtx tmp = gen_rtx_MULT (SImode, operands[0], GEN_INT (4));
+  tmp = gen_rtx_PLUS (SImode, tmp,
+			      vec_table_ref);
+  operands[4] = gen_rtx_MEM (SImode, tmp);
   MEM_READONLY_P (operands[4]) = 1;
   MEM_NOTRAP_P (operands[4]) = 1;
 })
@@ -9572,18 +9577,17 @@
 		(leu (match_operand:SI 0 "s_register_operand" "r")
 		     (match_operand:SI 1 "arm_rhs_operand" "rI"))
 		(mem:SI (plus:SI (mult:SI (match_dup 0) (const_int 4))
-				 (label_ref:SI (match_operand 2 "" ""))))
+				 (match_operand:SI 5 "s_register_operand" "r")))
 		(label_ref:SI (match_operand 3 "" ""))))
 	      (clobber (reg:CC CC_REGNUM))
-	      (use (label_ref:SI (match_dup 2)))])]
+	      (clobber (match_scratch:SI 4 "=r"))
+	      (use (label_ref:SI (match_operand 2 "")))])]
   "TARGET_ARM"
-  "*
-    if (flag_pic)
-      return \"cmp\\t%0, %1\;addls\\t%|pc, %|pc, %0, asl #2\;b\\t%l3\";
-    return   \"cmp\\t%0, %1\;ldrls\\t%|pc, [%|pc, %0, asl #2]\;b\\t%l3\";
-  "
+  {
+    return arm_output_casesi (operands);
+  }
   [(set_attr "conds" "clob")
-   (set_attr "length" "12")
+   (set_attr "length" "24")
    (set_attr "type" "multiple")]
 )
 
@@ -12179,7 +12183,7 @@
   [(set_attr "predicable" "yes")
    (set_attr "type" "clz")])
 
-(define_insn "rbitsi2"
+(define_insn "arm_rbit"
   [(set (match_operand:SI 0 "s_register_operand" "=r")
 	(unspec:SI [(match_operand:SI 1 "s_register_operand" "r")] UNSPEC_RBIT))]
   "TARGET_32BIT && arm_arch_thumb2"
@@ -12199,7 +12203,7 @@
   "&& reload_completed"
   [(const_int 0)]
   "
-  emit_insn (gen_rbitsi2 (operands[0], operands[1]));
+  emit_insn (gen_arm_rbit (operands[0], operands[1]));
   emit_insn (gen_clzsi2 (operands[0], operands[0]));
   DONE;
 ")
@@ -12274,7 +12278,7 @@
   [(set (match_operand:SI 0 "register_operand" "=r")
 	(unspec:SI [(const_int 0)] UNSPEC_TLS))]
   "TARGET_HARD_TP"
-  "mrc%?\\tp15, 0, %0, c13, c0, 3\\t@ load_tp_hard"
+  "* return arm_output_load_tpidr (operands[0], true);"
   [(set_attr "predicable" "yes")
    (set_attr "type" "mrs")]
 )
@@ -12284,7 +12288,7 @@
   [(set (match_operand:SI 0 "register_operand" "=r")
 	(unspec_volatile:SI [(const_int 0)] VUNSPEC_MRC))]
   "TARGET_HARD_TP"
-  "mrc\\tp15, 0, %0, c13, c0, 3\\t@ reload_tp_hard"
+  "* return arm_output_load_tpidr (operands[0], false);"
   [(set_attr "type" "mrs")]
 )
 
@@ -12563,7 +12567,7 @@
 ;; operations within an IOR/AND RTX, therefore we have two patterns matching
 ;; each valid permutation.
 
-(define_insn "arm_rev16si2"
+(define_insn "arm_rev16si2_alt1"
   [(set (match_operand:SI 0 "register_operand" "=l,l,r")
         (ior:SI (and:SI (ashift:SI (match_operand:SI 1 "register_operand" "l,l,r")
                                    (const_int 8))
@@ -12580,7 +12584,7 @@
    (set_attr "type" "rev")]
 )
 
-(define_insn "arm_rev16si2_alt"
+(define_insn "*arm_rev16si2_alt2"
   [(set (match_operand:SI 0 "register_operand" "=l,l,r")
         (ior:SI (and:SI (lshiftrt:SI (match_operand:SI 1 "register_operand" "l,l,r")
                                      (const_int 8))
@@ -12595,6 +12599,18 @@
   [(set_attr "arch" "t1,t2,32")
    (set_attr "length" "2,2,4")
    (set_attr "type" "rev")]
+)
+
+(define_expand "arm_rev16si2"
+  [(set (match_operand:SI 0 "s_register_operand")
+	(bswap:SI (match_operand:SI 1 "s_register_operand")))]
+  "arm_arch6"
+  {
+    rtx left = gen_int_mode (HOST_WIDE_INT_C (0xff00ff00ff00ff00), SImode);
+    rtx right = gen_int_mode (HOST_WIDE_INT_C (0xff00ff00ff00ff), SImode);
+    emit_insn (gen_arm_rev16si2_alt1 (operands[0], operands[1], right, left));
+    DONE;
+  }
 )
 
 (define_expand "bswaphi2"
@@ -12985,6 +13001,36 @@
   [(set_attr "type" "block")
    (set_attr "length" "8")]
 )
+
+(define_insn "pac_nop"
+  [(set (reg:SI IP_REGNUM)
+	(unspec:SI [(reg:SI SP_REGNUM) (reg:SI LR_REGNUM)]
+		   UNSPEC_PAC_NOP))]
+  "arm_arch8m_main"
+  "pac\t%|ip, %|lr, %|sp"
+  [(set_attr "conds" "unconditional")])
+
+(define_insn "pacbti_nop"
+  [(set (reg:SI IP_REGNUM)
+	(unspec_volatile:SI [(reg:SI SP_REGNUM) (reg:SI LR_REGNUM)]
+			    VUNSPEC_PACBTI_NOP))]
+  "arm_arch8m_main"
+  "pacbti\t%|ip, %|lr, %|sp"
+  [(set_attr "conds" "unconditional")])
+
+(define_insn "aut_nop"
+  [(unspec_volatile:SI [(reg:SI IP_REGNUM) (reg:SI SP_REGNUM) (reg:SI LR_REGNUM)]
+		       VUNSPEC_AUT_NOP)]
+  "arm_arch8m_main"
+  "aut\t%|ip, %|lr, %|sp"
+  [(set_attr "conds" "unconditional")])
+
+(define_insn "bti_nop"
+  [(unspec_volatile [(const_int 0)] VUNSPEC_BTI_NOP)]
+  "arm_arch8m_main"
+  "bti"
+  [(set_attr "conds" "unconditional")
+   (set_attr "type" "nop")])
 
 ;; Vector bits common to IWMMXT, Neon and MVE
 (include "vec-common.md")

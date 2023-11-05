@@ -59,6 +59,25 @@ static void collect_dfa_stats (struct dfa_stats_d *);
 			Dataflow analysis (DFA) routines
 ---------------------------------------------------------------------------*/
 
+/* Renumber the gimple stmt uids in one block.  The caller is responsible
+   of calling set_gimple_stmt_max_uid (fun, 0) at some point.  */
+
+void
+renumber_gimple_stmt_uids_in_block (struct function *fun, basic_block bb)
+{
+  gimple_stmt_iterator bsi;
+  for (bsi = gsi_start_phis (bb); !gsi_end_p (bsi); gsi_next (&bsi))
+    {
+      gimple *stmt = gsi_stmt (bsi);
+      gimple_set_uid (stmt, inc_gimple_stmt_max_uid (fun));
+    }
+  for (bsi = gsi_start_bb (bb); !gsi_end_p (bsi); gsi_next (&bsi))
+    {
+      gimple *stmt = gsi_stmt (bsi);
+      gimple_set_uid (stmt, inc_gimple_stmt_max_uid (fun));
+    }
+}
+
 /* Renumber all of the gimple stmt uids.  */
 
 void
@@ -68,19 +87,7 @@ renumber_gimple_stmt_uids (struct function *fun)
 
   set_gimple_stmt_max_uid (fun, 0);
   FOR_ALL_BB_FN (bb, fun)
-    {
-      gimple_stmt_iterator bsi;
-      for (bsi = gsi_start_phis (bb); !gsi_end_p (bsi); gsi_next (&bsi))
-	{
-	  gimple *stmt = gsi_stmt (bsi);
-	  gimple_set_uid (stmt, inc_gimple_stmt_max_uid (fun));
-	}
-      for (bsi = gsi_start_bb (bb); !gsi_end_p (bsi); gsi_next (&bsi))
-	{
-	  gimple *stmt = gsi_stmt (bsi);
-	  gimple_set_uid (stmt, inc_gimple_stmt_max_uid (fun));
-	}
-    }
+    renumber_gimple_stmt_uids_in_block (fun, bb);
 }
 
 /* Like renumber_gimple_stmt_uids, but only do work on the basic blocks
@@ -93,20 +100,7 @@ renumber_gimple_stmt_uids_in_blocks (basic_block *blocks, int n_blocks)
 
   set_gimple_stmt_max_uid (cfun, 0);
   for (i = 0; i < n_blocks; i++)
-    {
-      basic_block bb = blocks[i];
-      gimple_stmt_iterator bsi;
-      for (bsi = gsi_start_phis (bb); !gsi_end_p (bsi); gsi_next (&bsi))
-	{
-	  gimple *stmt = gsi_stmt (bsi);
-	  gimple_set_uid (stmt, inc_gimple_stmt_max_uid (cfun));
-	}
-      for (bsi = gsi_start_bb (bb); !gsi_end_p (bsi); gsi_next (&bsi))
-	{
-	  gimple *stmt = gsi_stmt (bsi);
-	  gimple_set_uid (stmt, inc_gimple_stmt_max_uid (cfun));
-	}
-    }
+    renumber_gimple_stmt_uids_in_block (cfun, blocks[i]);
 }
 
 
@@ -378,9 +372,9 @@ get_or_create_ssa_default_def (struct function *fn, tree var)
    true, the storage order of the reference is reversed.  */
 
 tree
-get_ref_base_and_extent (tree exp, poly_int64_pod *poffset,
-			 poly_int64_pod *psize,
-			 poly_int64_pod *pmax_size,
+get_ref_base_and_extent (tree exp, poly_int64 *poffset,
+			 poly_int64 *psize,
+			 poly_int64 *pmax_size,
 			 bool *preverse)
 {
   poly_offset_int bitsize = -1;
@@ -537,10 +531,7 @@ get_ref_base_and_extent (tree exp, poly_int64_pod *poffset,
 
 		value_range vr;
 		range_query *query;
-		if (cfun)
-		  query = get_range_query (cfun);
-		else
-		  query = get_global_range_query ();
+		query = get_range_query (cfun);
 
 		if (TREE_CODE (index) == SSA_NAME
 		    && (low_bound = array_ref_low_bound (exp),
@@ -548,7 +539,8 @@ get_ref_base_and_extent (tree exp, poly_int64_pod *poffset,
 		    && (unit_size = array_ref_element_size (exp),
 			TREE_CODE (unit_size) == INTEGER_CST)
 		    && query->range_of_expr (vr, index)
-		    && vr.kind () == VR_RANGE)
+		    && !vr.varying_p ()
+		    && !vr.undefined_p ())
 		  {
 		    wide_int min = vr.lower_bound ();
 		    wide_int max = vr.upper_bound ();
@@ -770,7 +762,7 @@ get_ref_base_and_extent_hwi (tree exp, HOST_WIDE_INT *poffset,
    its argument or a constant if the argument is known to be constant.  */
 
 tree
-get_addr_base_and_unit_offset_1 (tree exp, poly_int64_pod *poffset,
+get_addr_base_and_unit_offset_1 (tree exp, poly_int64 *poffset,
 				 tree (*valueize) (tree))
 {
   poly_int64 byte_offset = 0;
@@ -912,7 +904,7 @@ done:
    is not BITS_PER_UNIT-aligned.  */
 
 tree
-get_addr_base_and_unit_offset (tree exp, poly_int64_pod *poffset)
+get_addr_base_and_unit_offset (tree exp, poly_int64 *poffset)
 {
   return get_addr_base_and_unit_offset_1 (exp, poffset, NULL);
 }

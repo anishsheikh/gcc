@@ -32,7 +32,10 @@
 
 #pragma GCC system_header
 
-#if __cplusplus >= 201703L
+#define __glibcxx_want_optional
+#include <bits/version.h>
+
+#ifdef __cpp_lib_optional // C++ >= 17
 
 #include <type_traits>
 #include <exception>
@@ -59,14 +62,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
    *  @addtogroup utilities
    *  @{
    */
-
-#if __cplusplus > 202002L && __cpp_lib_concepts
-# define __cpp_lib_optional 202110L
-#elif __cplusplus >= 202002L
-# define __cpp_lib_optional 202106L
-#else
-# define __cpp_lib_optional 201606L
-#endif
 
   template<typename _Tp>
     class optional;
@@ -138,7 +133,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       // Constructor used by _Optional_base copy constructor when the
       // contained value is not trivially copy constructible.
       constexpr
-      _Optional_payload_base(bool __engaged,
+      _Optional_payload_base(bool /* __engaged */,
 			     const _Optional_payload_base& __other)
       {
 	if (__other._M_engaged)
@@ -148,7 +143,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       // Constructor used by _Optional_base move constructor when the
       // contained value is not trivially move constructible.
       constexpr
-      _Optional_payload_base(bool __engaged,
+      _Optional_payload_base(bool /* __engaged */,
 			     _Optional_payload_base&& __other)
       {
 	if (__other._M_engaged)
@@ -718,7 +713,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     {
       static_assert(!is_same_v<remove_cv_t<_Tp>, nullopt_t>);
       static_assert(!is_same_v<remove_cv_t<_Tp>, in_place_t>);
-      static_assert(!is_reference_v<_Tp>);
+      static_assert(is_object_v<_Tp> && !is_array_v<_Tp>);
 
     private:
       using _Base = _Optional_base<_Tp>;
@@ -1100,7 +1095,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	constexpr auto
 	transform(_Fn&& __f) &
 	{
-	  using _Up = invoke_result_t<_Fn, _Tp&>;
+	  using _Up = remove_cv_t<invoke_result_t<_Fn, _Tp&>>;
 	  if (has_value())
 	    return optional<_Up>(_Optional_func<_Fn>{__f}, **this);
 	  else
@@ -1111,7 +1106,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	constexpr auto
 	transform(_Fn&& __f) const &
 	{
-	  using _Up = invoke_result_t<_Fn, const _Tp&>;
+	  using _Up = remove_cv_t<invoke_result_t<_Fn, const _Tp&>>;
 	  if (has_value())
 	    return optional<_Up>(_Optional_func<_Fn>{__f}, **this);
 	  else
@@ -1122,7 +1117,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	constexpr auto
 	transform(_Fn&& __f) &&
 	{
-	  using _Up = invoke_result_t<_Fn, _Tp>;
+	  using _Up = remove_cv_t<invoke_result_t<_Fn, _Tp>>;
 	  if (has_value())
 	    return optional<_Up>(_Optional_func<_Fn>{__f}, std::move(**this));
 	  else
@@ -1133,7 +1128,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	constexpr auto
 	transform(_Fn&& __f) const &&
 	{
-	  using _Up = invoke_result_t<_Fn, const _Tp>;
+	  using _Up = remove_cv_t<invoke_result_t<_Fn, const _Tp>>;
 	  if (has_value())
 	    return optional<_Up>(_Optional_func<_Fn>{__f}, std::move(**this));
 	  else
@@ -1507,6 +1502,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 _GLIBCXX_END_NAMESPACE_VERSION
 } // namespace std
 
-#endif // C++17
+#endif // __cpp_lib_optional
 
 #endif // _GLIBCXX_OPTIONAL

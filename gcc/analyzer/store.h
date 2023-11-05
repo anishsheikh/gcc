@@ -350,6 +350,15 @@ struct byte_range
 		      m_size_in_bytes * BITS_PER_UNIT);
   }
 
+  bit_offset_t get_start_bit_offset () const
+  {
+    return m_start_byte_offset * BITS_PER_UNIT;
+  }
+  bit_offset_t get_next_bit_offset () const
+  {
+    return get_next_byte_offset () * BITS_PER_UNIT;
+  }
+
   static int cmp (const byte_range &br1, const byte_range &br2);
 
   byte_offset_t m_start_byte_offset;
@@ -390,6 +399,7 @@ public:
   { return this; }
 
   const bit_range &get_bit_range () const { return m_bit_range; }
+  bool get_byte_range (byte_range *out) const;
 
   bit_offset_t get_start_bit_offset () const
   {
@@ -541,6 +551,7 @@ public:
   void remove_overlapping_bindings (store_manager *mgr,
 				    const binding_key *drop_key,
 				    uncertainty_t *uncertainty,
+				    svalue_set *maybe_live_values,
 				    bool always_overlap);
 
 private:
@@ -607,7 +618,8 @@ public:
   void mark_region_as_unknown (store_manager *mgr,
 			       const region *reg_to_bind,
 			       const region *reg_for_overlap,
-			       uncertainty_t *uncertainty);
+			       uncertainty_t *uncertainty,
+			       svalue_set *maybe_live_values);
   void purge_state_involving (const svalue *sval,
 			      region_model_manager *sval_mgr);
 
@@ -620,7 +632,8 @@ public:
 					     const region *reg) const;
 
   void remove_overlapping_bindings (store_manager *mgr, const region *reg,
-				    uncertainty_t *uncertainty);
+				    uncertainty_t *uncertainty,
+				    svalue_set *maybe_live_values);
 
   template <typename T>
   void for_each_value (void (*cb) (const svalue *sval, T user_data),
@@ -746,7 +759,8 @@ public:
   void fill_region (store_manager *mgr, const region *reg, const svalue *sval);
   void zero_fill_region (store_manager *mgr, const region *reg);
   void mark_region_as_unknown (store_manager *mgr, const region *reg,
-			       uncertainty_t *uncertainty);
+			       uncertainty_t *uncertainty,
+			       svalue_set *maybe_live_values);
   void purge_state_involving (const svalue *sval,
 			      region_model_manager *sval_mgr);
 
@@ -801,6 +815,7 @@ public:
   void replay_call_summary_cluster (call_summary_replay &r,
 				    const store &summary,
 				    const region *base_reg);
+  void on_maybe_live_values (const svalue_set &maybe_live_values);
 
 private:
   void remove_overlapping_bindings (store_manager *mgr, const region *reg,
@@ -840,6 +855,12 @@ public:
   {
     return get_concrete_binding (bits.get_start_bit_offset (),
 				 bits.m_size_in_bits);
+  }
+  const concrete_binding *
+  get_concrete_binding (const byte_range &bytes)
+  {
+    bit_range bits = bytes.as_bit_range ();
+    return get_concrete_binding (bits);
   }
   const symbolic_binding *
   get_symbolic_binding (const region *region);

@@ -27,13 +27,14 @@ along with GCC; see the file COPYING3.  If not see
 #define OPTSTR_TUNE "tune"
 
 #define STR_CPU_NATIVE "native"
+#define STR_CPU_ABI_DEFAULT "abi-default"
 #define STR_CPU_LOONGARCH64 "loongarch64"
 #define STR_CPU_LA464 "la464"
 
 #define STR_ISA_BASE_LA64V100 "la64"
 
 #define OPTSTR_ISA_EXT_FPU "fpu"
-#define STR_ISA_EXT_NOFPU "none"
+#define STR_NONE "none"
 #define STR_ISA_EXT_FPU0 "0"
 #define STR_ISA_EXT_FPU32 "32"
 #define STR_ISA_EXT_FPU64 "64"
@@ -41,6 +42,10 @@ along with GCC; see the file COPYING3.  If not see
 #define OPTSTR_SOFT_FLOAT "soft-float"
 #define OPTSTR_SINGLE_FLOAT "single-float"
 #define OPTSTR_DOUBLE_FLOAT "double-float"
+
+#define OPTSTR_ISA_EXT_SIMD "simd"
+#define STR_ISA_EXT_LSX "lsx"
+#define STR_ISA_EXT_LASX "lasx"
 
 #define OPTSTR_ABI_BASE "abi"
 #define STR_ABI_BASE_LP64D "lp64d"
@@ -56,5 +61,10 @@ along with GCC; see the file COPYING3.  If not see
 #define STR_CMODEL_MEDIUM "medium"
 #define STR_CMODEL_LARGE "large"
 #define STR_CMODEL_EXTREME "extreme"
+
+#define OPTSTR_EXPLICIT_RELOCS "explicit-relocs"
+#define STR_EXPLICIT_RELOCS_AUTO "auto"
+#define STR_EXPLICIT_RELOCS_NONE "none"
+#define STR_EXPLICIT_RELOCS_ALWAYS "always"
 
 #endif /* LOONGARCH_STR_H */

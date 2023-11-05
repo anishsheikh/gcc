@@ -56,7 +56,7 @@ struct GTY(()) object_size
   tree wholesize;
 };
 
-static tree compute_object_offset (const_tree, const_tree);
+static tree compute_object_offset (tree, const_tree);
 static bool addr_object_size (struct object_size_info *,
 			      const_tree, int, tree *, tree *t = NULL);
 static tree alloc_object_size (const gcall *, int);
@@ -396,7 +396,7 @@ size_for_offset (tree sz, tree offset, tree wholesize = NULL_TREE)
    if unknown.  */
 
 static tree
-compute_object_offset (const_tree expr, const_tree var)
+compute_object_offset (tree expr, const_tree var)
 {
   enum tree_code code = PLUS_EXPR;
   tree base, off, t;
@@ -412,7 +412,8 @@ compute_object_offset (const_tree expr, const_tree var)
 	return base;
 
       t = TREE_OPERAND (expr, 1);
-      off = size_binop (PLUS_EXPR, DECL_FIELD_OFFSET (t),
+      off = size_binop (PLUS_EXPR,
+			component_ref_field_offset (expr),
 			size_int (tree_to_uhwi (DECL_FIELD_BIT_OFFSET (t))
 				  / BITS_PER_UNIT));
       break;
@@ -632,11 +633,32 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 		    v = NULL_TREE;
 		    break;
 		  case COMPONENT_REF:
-		    if (TREE_CODE (TREE_TYPE (v)) != ARRAY_TYPE)
+		    /* When the ref is not to an aggregate type, i.e, an array,
+		       a record or a union, it will not have flexible size,
+		       compute the object size directly.  */
+		    if (!AGGREGATE_TYPE_P (TREE_TYPE (v)))
 		      {
 			v = NULL_TREE;
 			break;
 		      }
+		    /* if the ref is to a record or union type, but the type
+		       does not include a flexible array recursively, compute
+		       the object size directly.  */
+		    if (RECORD_OR_UNION_TYPE_P (TREE_TYPE (v)))
+		      {
+			if (!TYPE_INCLUDES_FLEXARRAY (TREE_TYPE (v)))
+			  {
+			    v = NULL_TREE;
+			    break;
+			  }
+			else
+			  {
+			    v = TREE_OPERAND (v, 0);
+			    break;
+			  }
+		      }
+		    /* Now the ref is to an array type.  */
+		    gcc_assert (TREE_CODE (TREE_TYPE (v)) == ARRAY_TYPE);
 		    is_flexible_array_mem_ref = array_ref_flexible_size_p (v);
 		    while (v != pt_var && TREE_CODE (v) == COMPONENT_REF)
 		      if (TREE_CODE (TREE_TYPE (TREE_OPERAND (v, 0)))
@@ -1553,8 +1575,8 @@ parm_object_size (struct object_size_info *osi, tree var)
   tree typesize = TYPE_SIZE_UNIT (TREE_TYPE (TREE_TYPE (parm)));
   tree sz = NULL_TREE;
 
-  /* If we have an explicit access attribute with a usable size argument... */
-  if (access && access->sizarg != UINT_MAX && !access->internal_p
+  /* If we have an access attribute with a usable size argument... */
+  if (access && access->sizarg != UINT_MAX
       /* ... and either PARM is void * or has a type that is complete and has a
 	 constant size... */
       && ((typesize && poly_int_tree_p (typesize))
@@ -1565,10 +1587,14 @@ parm_object_size (struct object_size_info *osi, tree var)
       unsigned argpos = 0;
 
       /* ... then walk through the parameters to pick the size parameter and
-	 safely scale it by the type size if needed.  */
+	 safely scale it by the type size if needed.
+
+	 TODO: we could also compute the size of VLAs where the size is
+	 given by a function parameter.  */
       for (arg = fnargs; arg; arg = TREE_CHAIN (arg), ++argpos)
-	if (argpos == access->sizarg && INTEGRAL_TYPE_P (TREE_TYPE (arg)))
+	if (argpos == access->sizarg)
 	  {
+	    gcc_assert (INTEGRAL_TYPE_P (TREE_TYPE (arg)));
 	    sz = get_or_create_ssa_default_def (cfun, arg);
 	    if (sz != NULL_TREE)
 	      {

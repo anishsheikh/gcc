@@ -51,7 +51,6 @@
 #include "insn-codes.h"
 #include "tm.h"
 #include "hard-reg-set.h"
-#include "tree-core.h"
 
 #if CHECKING_P
 
@@ -68,6 +67,20 @@ struct cumulative_args_t { void *magic; void *p; };
 union cumulative_args_t { void *p; };
 
 #endif /* !CHECKING_P */
+
+/* Target properties of _BitInt(N) type.  _BitInt(N) is to be represented
+   as series of limb_mode CEIL (N, GET_MODE_PRECISION (limb_mode)) limbs,
+   ordered from least significant to most significant if !big_endian,
+   otherwise from most significant to least significant.  If extended is
+   false, the bits above or equal to N are undefined when stored in a register
+   or memory, otherwise they are zero or sign extended depending on if
+   it is unsigned _BitInt(N) or _BitInt(N) / signed _BitInt(N).  */
+
+struct bitint_info {
+  machine_mode limb_mode;
+  bool big_endian;
+  bool extended;
+};
 
 /* Types of memory operation understood by the "by_pieces" infrastructure.
    Used by the TARGET_USE_BY_PIECES_INFRASTRUCTURE_P target hook and
@@ -260,6 +273,8 @@ enum poly_value_estimate_kind
   POLY_VALUE_LIKELY
 };
 
+typedef void (*emit_support_tinfos_callback) (tree);
+
 extern bool verify_type_context (location_t, type_context_kind, const_tree,
 				 bool = false);
 
@@ -279,7 +294,7 @@ extern struct gcc_target targetm;
    runtime value is needed for correctness, since the function only
    provides a rough guess.  */
 
-static inline HOST_WIDE_INT
+inline HOST_WIDE_INT
 estimated_poly_value (poly_int64 x,
 		      poly_value_estimate_kind kind = POLY_VALUE_LIKELY)
 {
@@ -295,7 +310,7 @@ estimated_poly_value (poly_int64 x,
 #define CUMULATIVE_ARGS_MAGIC ((void *) &targetm.calls)
 #endif
 
-static inline CUMULATIVE_ARGS *
+inline CUMULATIVE_ARGS *
 get_cumulative_args (cumulative_args_t arg)
 {
 #if CHECKING_P
@@ -304,7 +319,7 @@ get_cumulative_args (cumulative_args_t arg)
   return (CUMULATIVE_ARGS *) arg.p;
 }
 
-static inline cumulative_args_t
+inline cumulative_args_t
 pack_cumulative_args (CUMULATIVE_ARGS *arg)
 {
   cumulative_args_t ret;

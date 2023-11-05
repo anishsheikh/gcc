@@ -53,6 +53,7 @@ through the macros defined in the @file{.h} file.
 * PCH Target::          Validity checking for precompiled headers.
 * C++ ABI::             Controlling C++ ABI changes.
 * D Language and ABI::  Controlling D ABI changes.
+* Rust Language and ABI:: Controlling Rust ABI changes.
 * Named Address Spaces:: Adding support for named address spaces
 * Misc::                Everything else.
 @end menu
@@ -114,6 +115,14 @@ This is declared in @file{d/d-target.h}, the initializer
 initialize @code{targetdm} themselves, they should set
 @code{target_has_targetdm=yes} in @file{config.gcc}; otherwise a default
 definition is used.
+
+Similarly, there is a @code{targetrustm} variable for hooks that are
+specific to the Rust language front end, documented as ``Rust Target
+Hook''.  This is declared in @file{rust/rust-target.h}, the initializer
+@code{TARGETRUSTM_INITIALIZER} in @file{rust/rust-target-def.h}.
+If targets initialize @code{targetrustm} themselves, they should set
+@code{target_has_targetrustm=yes} in @file{config.gcc}; otherwise a
+default definition is used.
 
 @node Driver
 @section Controlling the Compilation Driver, @file{gcc}
@@ -936,6 +945,8 @@ Return a value, with the same meaning as the C99 macro
 @code{FLT_EVAL_METHOD} that describes which excess precision should be
 applied.
 
+@hook TARGET_C_BITINT_TYPE_INFO
+
 @hook TARGET_PROMOTE_FUNCTION_MODE
 
 @defmac PARM_BOUNDARY
@@ -1285,6 +1296,8 @@ pattern needs to support both a 32- and a 64-bit mode.
 @hook TARGET_INSTANTIATE_DECLS
 
 @hook TARGET_MANGLE_TYPE
+
+@hook TARGET_EMIT_SUPPORT_TINFOS
 
 @node Type Layout
 @section Layout of Source Language Data Types
@@ -2137,11 +2150,28 @@ of an address, @code{ADDRESS} for something that occurs in an
 index expression if @var{outer_code} is @code{PLUS}; @code{SCRATCH} otherwise.
 @end defmac
 
+@defmac INSN_BASE_REG_CLASS (@var{insn})
+A C expression whose value is the register class to which a valid
+base register for a specified @var{insn} must belong. This macro is
+used when some backend insns may have limited usage of base register
+compared with other insns. If you define this macro, the compiler will
+use it instead of all other defined macros that relate to
+BASE_REG_CLASS.
+@end defmac
+
 @defmac INDEX_REG_CLASS
 A macro whose definition is the name of the class to which a valid
 index register must belong.  An index register is one used in an
 address where its value is either multiplied by a scale factor or
 added to another register (as well as added to a displacement).
+@end defmac
+
+@defmac INSN_INDEX_REG_CLASS (@var{insn})
+A C expression whose value is the register class to which a valid
+index register for a specified @var{insn} must belong. This macro is
+used when some backend insns may have limited usage of index register
+compared with other insns. If you defined this macro, the compiler
+will use it instead of @code{INDEX_REG_CLASS}.
 @end defmac
 
 @defmac REGNO_OK_FOR_BASE_P (@var{num})
@@ -2185,6 +2215,15 @@ address, @code{ADDRESS} for something that occurs in an
 corresponding index expression if @var{outer_code} is @code{PLUS};
 @code{SCRATCH} otherwise.  The mode may be @code{VOIDmode} for addresses
 that appear outside a @code{MEM}, i.e., as an @code{address_operand}.
+@end defmac
+
+@defmac REGNO_OK_FOR_INSN_BASE_P (@var{num}, @var{insn})
+A C expression which is nonzero if register number @var{num} is
+suitable for use as a base register in operand addresses for a specified
+@var{insn}. This macro is used when some backend insn may have limited
+usage of base register compared with other insns. If you define this
+macro, the compiler will use it instead of all other defined macros
+that relate to REGNO_OK_FOR_BASE_P.
 @end defmac
 
 @defmac REGNO_OK_FOR_INDEX_P (@var{num})
@@ -3372,6 +3411,8 @@ stack.
 
 @hook TARGET_VECTOR_MODE_SUPPORTED_P
 
+@hook TARGET_VECTOR_MODE_SUPPORTED_ANY_TARGET_P
+
 @hook TARGET_COMPATIBLE_VECTOR_TYPES_P
 
 @hook TARGET_ARRAY_MODE
@@ -3534,9 +3575,9 @@ This section describes the macros that output function entry
 @hook TARGET_ASM_FUNCTION_EPILOGUE
 
 @itemize @bullet
-@item
 @findex pretend_args_size
 @findex crtl->args.pretend_args_size
+@item
 A region of @code{crtl->args.pretend_args_size} bytes of
 uninitialized space just underneath the first argument arriving on the
 stack.  (This may not be at the very start of the allocated stack region
@@ -3561,8 +3602,8 @@ boundary, to contain the local variables of the function.  On some machines,
 this region and the save area may occur in the opposite order, with the
 save area closer to the top of the stack.
 
-@item
 @cindex @code{ACCUMULATE_OUTGOING_ARGS} and stack frames
+@item
 Optionally, when @code{ACCUMULATE_OUTGOING_ARGS} is defined, a region of
 @code{crtl->outgoing_args_size} bytes to be used for outgoing
 argument lists of the function.  @xref{Stack Arguments}.
@@ -4002,11 +4043,13 @@ macro, a reasonable default is used.
 
 @hook TARGET_LIBC_HAS_FAST_FUNCTION
 
+@hook TARGET_LIBM_FUNCTION_MAX_ERROR
+
 @defmac NEXT_OBJC_RUNTIME
 Set this macro to 1 to use the "NeXT" Objective-C message sending conventions
 by default.  This calling convention involves passing the object, the selector
 and the method arguments all at once to the method-lookup library function.
-This is the usual setting when targeting Darwin/Mac OS X systems, which have
+This is the usual setting when targeting Darwin / macOS systems, which have
 the NeXT runtime installed.
 
 If the macro is set to 0, the "GNU" Objective-C message sending convention
@@ -4173,7 +4216,7 @@ address;  but often a machine-dependent strategy can generate better code.
 
 @hook TARGET_VECTORIZE_VEC_PERM_CONST
 
-@hook TARGET_VECTORIZE_CAN_SPECIAL_DIV_BY_CONST
+@hook TARGET_VECTORIZE_PREFERRED_DIV_AS_SHIFTS_OVER_MULT
 
 @hook TARGET_VECTORIZE_BUILTIN_VECTORIZED_FUNCTION
 
@@ -7127,6 +7170,14 @@ floating-point support; they are not included in this mechanism.
 
 @hook TARGET_D_TEMPLATES_ALWAYS_COMDAT
 
+@node Rust Language and ABI
+@section Rust ABI parameters
+@cindex parameters, rust abi
+
+@hook TARGET_RUST_CPU_INFO
+
+@hook TARGET_RUST_OS_INFO
+
 @node Named Address Spaces
 @section Adding support for named address spaces
 @cindex named address spaces
@@ -7784,8 +7835,6 @@ lists.
 @hook TARGET_GEN_CCMP_FIRST
 
 @hook TARGET_GEN_CCMP_NEXT
-
-@hook TARGET_GEN_MEMSET_SCRATCH_RTX
 
 @hook TARGET_LOOP_UNROLL_ADJUST
 

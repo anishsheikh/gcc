@@ -30,6 +30,9 @@ along with GCC; see the file COPYING3.  If not see
    Supports creating a DOM-like tree of json::value *, and then dumping
    json::value * to text.  */
 
+/* TODO: `libcpp/mkdeps.cc` wants JSON writing support for p1689r5 output;
+   extract this code and move to libiberty.  */
+
 namespace json
 {
 
@@ -82,8 +85,11 @@ class value
   void dump (FILE *) const;
 };
 
-/* Subclass of value for objects: an unordered collection of
-   key/value pairs.  */
+/* Subclass of value for objects: a collection of key/value pairs
+   preserving the ordering in which keys were inserted.
+
+   Preserving the order eliminates non-determinism in the output,
+   making it easier for the user to compare repeated invocations.  */
 
 class object : public value
 {
@@ -100,6 +106,9 @@ class object : public value
   typedef hash_map <char *, value *,
     simple_hashmap_traits<nofree_string_hash, value *> > map_t;
   map_t m_map;
+
+  /* Keep track of order in which keys were inserted.  */
+  auto_vec <const char *> m_keys;
 };
 
 /* Subclass of value for arrays.  */

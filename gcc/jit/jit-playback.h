@@ -28,7 +28,7 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "jit-recording.h"
 
-struct diagnostic_context;
+class diagnostic_context;
 struct diagnostic_info;
 
 namespace gcc {
@@ -247,7 +247,7 @@ public:
   get_first_error () const;
 
   void
-  add_diagnostic (struct diagnostic_context *context,
+  add_diagnostic (diagnostic_context *context,
 		  struct diagnostic_info *diagnostic);
 
   void
@@ -444,6 +444,11 @@ public:
   type *get_volatile () const
   {
     return new type (build_qualified_type (m_inner, TYPE_QUAL_VOLATILE));
+  }
+
+  type *get_restrict () const
+  {
+    return new type (build_qualified_type (m_inner, TYPE_QUAL_RESTRICT));
   }
 
   type *get_aligned (size_t alignment_in_bytes) const;

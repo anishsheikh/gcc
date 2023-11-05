@@ -389,8 +389,7 @@ gfc_post_options (const char **pfilename)
       /* Enable -Werror=line-truncation when -Werror and -Wno-error have
 	 not been set.  */
       if (warn_line_truncation && !OPTION_SET_P (warnings_are_errors)
-	  && (global_dc->classify_diagnostic[OPT_Wline_truncation] ==
-	      DK_UNSPECIFIED))
+	  && option_unspecified_p (OPT_Wline_truncation))
 	diagnostic_classify_diagnostic (global_dc, OPT_Wline_truncation,
 					DK_ERROR, UNKNOWN_LOCATION);
     }
@@ -555,9 +554,12 @@ gfc_handle_fpe_option (const char *arg, bool trap)
 	pos++;
 
       result = 0;
-      if (!trap && strncmp ("none", arg, pos) == 0)
+      if (strncmp ("none", arg, pos) == 0)
 	{
-	  gfc_option.fpe_summary = 0;
+	  if (trap)
+	    gfc_option.fpe = 0;
+	  else
+	    gfc_option.fpe_summary = 0;
 	  arg += pos;
 	  pos = 0;
 	  continue;
@@ -586,7 +588,7 @@ gfc_handle_fpe_option (const char *arg, bool trap)
 	      break;
 	    }
 	  }
-      if (!result && !trap)
+      if (!result && trap)
 	gfc_fatal_error ("Argument to %<-ffpe-trap%> is not valid: %s", arg);
       else if (!result)
 	gfc_fatal_error ("Argument to %<-ffpe-summary%> is not valid: %s", arg);

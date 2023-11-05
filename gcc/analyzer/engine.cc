@@ -115,21 +115,35 @@ impl_region_model_context (program_state *state,
 }
 
 bool
-impl_region_model_context::warn (std::unique_ptr<pending_diagnostic> d)
+impl_region_model_context::warn (std::unique_ptr<pending_diagnostic> d,
+				 const stmt_finder *custom_finder)
 {
   LOG_FUNC (get_logger ());
-  if (m_stmt == NULL && m_stmt_finder == NULL)
+  auto curr_stmt_finder = custom_finder ? custom_finder : m_stmt_finder;
+  if (m_stmt == NULL && curr_stmt_finder == NULL)
     {
       if (get_logger ())
 	get_logger ()->log ("rejecting diagnostic: no stmt");
       return false;
     }
   if (m_eg)
-    return m_eg->get_diagnostic_manager ().add_diagnostic
-      (m_enode_for_diag, m_enode_for_diag->get_supernode (),
-       m_stmt, m_stmt_finder, std::move (d));
-  else
-    return false;
+    {
+      bool terminate_path = d->terminate_path_p ();
+      pending_location ploc (m_enode_for_diag,
+			     m_enode_for_diag->get_supernode (),
+			     m_stmt,
+			     curr_stmt_finder);
+      if (m_eg->get_diagnostic_manager ().add_diagnostic (ploc,
+							  std::move (d)))
+	{
+	  if (m_path_ctxt
+	      && terminate_path
+	      && flag_analyzer_suppress_followups)
+	    m_path_ctxt->terminate_path ();
+	  return true;
+	}
+    }
+  return false;
 }
 
 void
@@ -138,6 +152,14 @@ impl_region_model_context::add_note (std::unique_ptr<pending_note> pn)
   LOG_FUNC (get_logger ());
   if (m_eg)
     m_eg->get_diagnostic_manager ().add_note (std::move (pn));
+}
+
+void
+impl_region_model_context::add_event (std::unique_ptr<checker_event> event)
+{
+  LOG_FUNC (get_logger ());
+  if (m_eg)
+    m_eg->get_diagnostic_manager ().add_event (std::move (event));
 }
 
 void
@@ -378,9 +400,15 @@ public:
       = (var
 	 ? m_old_smap->get_state (var_old_sval, m_eg.get_ext_state ())
 	 : m_old_smap->get_global_state ());
+    bool terminate_path = d->terminate_path_p ();
+    pending_location ploc (m_enode_for_diag, snode, stmt, m_stmt_finder);
     m_eg.get_diagnostic_manager ().add_diagnostic
-      (&m_sm, m_enode_for_diag, snode, stmt, m_stmt_finder,
+      (&m_sm, ploc,
        var, var_old_sval, current, std::move (d));
+    if (m_path_ctxt
+	&& terminate_path
+	&& flag_analyzer_suppress_followups)
+      m_path_ctxt->terminate_path ();
   }
 
   void warn (const supernode *snode, const gimple *stmt,
@@ -393,9 +421,15 @@ public:
       = (sval
 	 ? m_old_smap->get_state (sval, m_eg.get_ext_state ())
 	 : m_old_smap->get_global_state ());
+    bool terminate_path = d->terminate_path_p ();
+    pending_location ploc (m_enode_for_diag, snode, stmt, m_stmt_finder);
     m_eg.get_diagnostic_manager ().add_diagnostic
-      (&m_sm, m_enode_for_diag, snode, stmt, m_stmt_finder,
+      (&m_sm, ploc,
        NULL_TREE, sval, current, std::move (d));
+    if (m_path_ctxt
+	&& terminate_path
+	&& flag_analyzer_suppress_followups)
+      m_path_ctxt->terminate_path ();
   }
 
   /* Hook for picking more readable trees for SSA names of temporaries,
@@ -869,10 +903,15 @@ impl_region_model_context::on_state_leak (const state_machine &sm,
   tree leaked_tree_for_diag = fixup_tree_for_diagnostic (leaked_tree);
   std::unique_ptr<pending_diagnostic> pd = sm.on_leak (leaked_tree_for_diag);
   if (pd)
-    m_eg->get_diagnostic_manager ().add_diagnostic
-      (&sm, m_enode_for_diag, m_enode_for_diag->get_supernode (),
-       m_stmt, &stmt_finder,
-       leaked_tree_for_diag, sval, state, std::move (pd));
+    {
+      pending_location ploc (m_enode_for_diag,
+			     m_enode_for_diag->get_supernode (),
+			     m_stmt,
+			     &stmt_finder);
+      m_eg->get_diagnostic_manager ().add_diagnostic
+	(&sm, ploc,
+	 leaked_tree_for_diag, sval, state, std::move (pd));
+    }
 }
 
 /* Implementation of region_model_context::on_condition vfunc.
@@ -1752,7 +1791,7 @@ public:
     return OPT_Wanalyzer_stale_setjmp_buffer;
   }
 
-  bool emit (rich_location *richloc) final override
+  bool emit (rich_location *richloc, logger *) final override
   {
     return warning_at
       (richloc, get_controlling_option (),
@@ -3821,8 +3860,10 @@ exploded_graph::maybe_create_dynamic_call (const gcall *call,
 class impl_path_context : public path_context
 {
 public:
-  impl_path_context (const program_state *cur_state)
+  impl_path_context (const program_state *cur_state,
+		     logger *logger)
   : m_cur_state (cur_state),
+    m_logger (logger),
     m_terminate_path (false)
   {
   }
@@ -3841,6 +3882,9 @@ public:
   void
   bifurcate (std::unique_ptr<custom_edge_info> info) final override
   {
+    if (m_logger)
+      m_logger->log ("bifurcating path");
+
     if (m_state_at_bifurcation)
       /* Verify that the state at bifurcation is consistent when we
 	 split into multiple out-edges.  */
@@ -3857,6 +3901,8 @@ public:
 
   void terminate_path () final override
   {
+    if (m_logger)
+      m_logger->log ("terminating path");
     m_terminate_path = true;
   }
 
@@ -3872,6 +3918,8 @@ public:
 
 private:
   const program_state *m_cur_state;
+
+  logger *m_logger;
 
   /* Lazily-created copy of the state before the split.  */
   std::unique_ptr<program_state> m_state_at_bifurcation;
@@ -3906,7 +3954,7 @@ public:
     return OPT_Wanalyzer_jump_through_null;
   }
 
-  bool emit (rich_location *rich_loc) final override
+  bool emit (rich_location *rich_loc, logger *) final override
   {
     return warning_at (rich_loc, get_controlling_option (),
 		       "jump through null pointer");
@@ -4017,7 +4065,7 @@ exploded_graph::process_node (exploded_node *node)
 	   exactly one stmt, the one that caused the change. */
 	program_state next_state (state);
 
-	impl_path_context path_ctxt (&next_state);
+	impl_path_context path_ctxt (&next_state, logger);
 
 	uncertainty_t uncertainty;
 	const supernode *snode = point.get_supernode ();
@@ -4659,7 +4707,7 @@ exploded_path::feasible_p (logger *logger,
 		     eedge->m_src->m_index,
 		     eedge->m_dest->m_index);
 
-      rejected_constraint *rc = NULL;
+      std::unique_ptr <rejected_constraint> rc;
       if (!state.maybe_update_for_edge (logger, eedge, &rc))
 	{
 	  gcc_assert (rc);
@@ -4669,11 +4717,10 @@ exploded_path::feasible_p (logger *logger,
 	      const program_point &src_point = src_enode.get_point ();
 	      const gimple *last_stmt
 		= src_point.get_supernode ()->get_last_stmt ();
-	      *out = make_unique<feasibility_problem> (edge_idx, *eedge,
-						       last_stmt, rc);
+	      *out = ::make_unique<feasibility_problem> (edge_idx, *eedge,
+							 last_stmt,
+							 std::move (rc));
 	    }
-	  else
-	    delete rc;
 	  return false;
 	}
 
@@ -4799,9 +4846,10 @@ feasibility_state::feasibility_state (const feasibility_state &other)
    Otherwise, return false and write to *OUT_RC.  */
 
 bool
-feasibility_state::maybe_update_for_edge (logger *logger,
-					  const exploded_edge *eedge,
-					  rejected_constraint **out_rc)
+feasibility_state::
+maybe_update_for_edge (logger *logger,
+		       const exploded_edge *eedge,
+		       std::unique_ptr<rejected_constraint> *out_rc)
 {
   const exploded_node &src_enode = *eedge->m_src;
   const program_point &src_point = src_enode.get_point ();
@@ -4823,17 +4871,7 @@ feasibility_state::maybe_update_for_edge (logger *logger,
       auto_cfun sentinel (src_point.get_function ());
       input_location = stmt->location;
 
-      if (const gassign *assign = dyn_cast <const gassign *> (stmt))
-	m_model.on_assignment (assign, NULL);
-      else if (const gasm *asm_stmt = dyn_cast <const gasm *> (stmt))
-	m_model.on_asm_stmt (asm_stmt, NULL);
-      else if (const gcall *call = dyn_cast <const gcall *> (stmt))
-	{
-	  bool unknown_side_effects = m_model.on_call_pre (call, NULL);
-	  m_model.on_call_post (call, unknown_side_effects, NULL);
-	}
-      else if (const greturn *return_ = dyn_cast <const greturn *> (stmt))
-	m_model.on_return (return_, NULL);
+      update_for_stmt (stmt);
     }
 
   const superedge *sedge = eedge->m_sedge;
@@ -4908,6 +4946,24 @@ feasibility_state::maybe_update_for_edge (logger *logger,
       bitmap_set_bit (m_snodes_visited, dst_snode_idx);
     }
   return true;
+}
+
+/* Update this object for the effects of STMT.  */
+
+void
+feasibility_state::update_for_stmt (const gimple *stmt)
+{
+  if (const gassign *assign = dyn_cast <const gassign *> (stmt))
+    m_model.on_assignment (assign, NULL);
+  else if (const gasm *asm_stmt = dyn_cast <const gasm *> (stmt))
+    m_model.on_asm_stmt (asm_stmt, NULL);
+  else if (const gcall *call = dyn_cast <const gcall *> (stmt))
+    {
+      bool unknown_side_effects = m_model.on_call_pre (call, NULL);
+      m_model.on_call_post (call, unknown_side_effects, NULL);
+    }
+  else if (const greturn *return_ = dyn_cast <const greturn *> (stmt))
+    m_model.on_return (return_, NULL);
 }
 
 /* Dump this object to PP.  */

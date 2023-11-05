@@ -59,6 +59,10 @@ along with GCC; see the file COPYING3.  If not see
 #define C_TYPE_VARIABLE_SIZE(TYPE) TYPE_LANG_FLAG_1 (TYPE)
 #define C_DECL_VARIABLE_SIZE(TYPE) DECL_LANG_FLAG_0 (TYPE)
 
+/* Record whether a type is variably modified. */
+#define C_TYPE_VARIABLY_MODIFIED(TYPE) TYPE_LANG_FLAG_6 (TYPE)
+
+
 /* Record whether a type is defined inside a struct or union type.
    This is used for -Wc++-compat. */
 #define C_TYPE_DEFINED_IN_STRUCT(TYPE) TYPE_LANG_FLAG_2 (TYPE)
@@ -266,7 +270,7 @@ enum c_storage_class {
 
 /* A type specifier keyword "void", "_Bool", "char", "int", "float",
    "double", "_Decimal32", "_Decimal64", "_Decimal128", "_Fract", "_Accum",
-   or none of these.  */
+   "_BitInt", or none of these.  */
 enum c_typespec_keyword {
   cts_none,
   cts_void,
@@ -282,6 +286,7 @@ enum c_typespec_keyword {
   cts_floatn_nx,
   cts_fract,
   cts_accum,
+  cts_bitint,
   cts_auto_type
 };
 
@@ -362,11 +367,16 @@ struct c_declspecs {
      specifier, in bytes, or -1 if no such specifiers with nonzero
      alignment.  */
   int align_log;
-  /* For the __intN declspec, this stores the index into the int_n_* arrays.  */
-  int int_n_idx;
-  /* For the _FloatN and _FloatNx declspec, this stores the index into
-     the floatn_nx_types array.  */
-  int floatn_nx_idx;
+  union {
+    /* For the __intN declspec, this stores the index into the int_n_*
+       arrays.  */
+    int int_n_idx;
+    /* For the _FloatN and _FloatNx declspec, this stores the index into
+       the floatn_nx_types array.  */
+    int floatn_nx_idx;
+    /* For _BitInt(N) this stores the N.  */
+    int bitint_prec;
+  } u;
   /* The storage class specifier, or csc_none if none.  */
   enum c_storage_class storage_class;
   /* Any type specifier keyword used such as "int", not reflecting
@@ -586,6 +596,7 @@ enum c_inline_static_type {
 
 
 /* in c-parser.cc */
+struct c_tree_token_vec;
 extern void c_parse_init (void);
 extern bool c_keyword_starts_typename (enum rid keyword);
 
@@ -616,6 +627,7 @@ extern unsigned int start_underspecified_init (location_t, tree);
 extern void finish_underspecified_init (tree, unsigned int);
 extern void push_scope (void);
 extern tree pop_scope (void);
+extern void c_mark_decl_jump_unsafe_in_current_scope ();
 extern void c_bindings_start_stmt_expr (struct c_spot_bindings *);
 extern void c_bindings_end_stmt_expr (struct c_spot_bindings *);
 
@@ -652,7 +664,7 @@ extern tree c_simulate_record_decl (location_t, const char *,
 extern struct c_arg_info *build_arg_info (void);
 extern struct c_arg_info *get_parm_info (bool, tree);
 extern tree grokfield (location_t, struct c_declarator *,
-		       struct c_declspecs *, tree, tree *);
+		       struct c_declspecs *, tree, tree *, tree *);
 extern tree groktypename (struct c_type_name *, tree *, bool *);
 extern tree grokparm (const struct c_parm *, tree *);
 extern tree implicitly_declare (location_t, tree);
@@ -708,13 +720,14 @@ extern struct c_declspecs *declspecs_add_addrspace (location_t,
 extern struct c_declspecs *declspecs_add_alignas (location_t,
 						  struct c_declspecs *, tree);
 extern struct c_declspecs *finish_declspecs (struct c_declspecs *);
+extern size_t c_tree_size (enum tree_code);
 
 /* in c-objc-common.cc */
 extern bool c_objc_common_init (void);
 extern bool c_missing_noreturn_ok_p (tree);
 extern bool c_warn_unused_global_decl (const_tree);
 extern void c_initialize_diagnostics (diagnostic_context *);
-extern bool c_vla_unspec_p (tree x, tree fn);
+extern bool c_var_mod_p (tree x, tree fn);
 extern alias_set_type c_get_alias_set (tree);
 
 /* in c-typeck.cc */
@@ -728,6 +741,16 @@ extern location_t c_last_sizeof_loc;
 
 extern struct c_switch *c_switch_stack;
 
+extern bool null_pointer_constant_p (const_tree);
+
+
+inline
+bool c_type_variably_modified_p (tree t)
+{
+  return error_mark_node != t && C_TYPE_VARIABLY_MODIFIED (t);
+}
+
+
 extern bool char_type_p (tree);
 extern tree c_objc_common_truthvalue_conversion (location_t, tree);
 extern tree require_complete_type (location_t, tree);
@@ -735,7 +758,6 @@ extern bool same_translation_unit_p (const_tree, const_tree);
 extern int comptypes (tree, tree);
 extern int comptypes_check_different_types (tree, tree, bool *);
 extern int comptypes_check_enum_int (tree, tree, bool *);
-extern bool c_vla_type_p (const_tree);
 extern bool c_mark_addressable (tree, bool = false);
 extern void c_incomplete_type_error (location_t, const_tree, const_tree);
 extern tree c_type_promotes_to (tree);

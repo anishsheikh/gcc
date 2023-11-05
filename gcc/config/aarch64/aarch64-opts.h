@@ -75,14 +75,14 @@ enum aarch64_code_model {
   AARCH64_CMODEL_LARGE
 };
 
-/* Function types -msign-return-address should sign.  */
-enum aarch64_function_type {
-  /* Don't sign any function.  */
-  AARCH64_FUNCTION_NONE,
-  /* Non-leaf functions.  */
-  AARCH64_FUNCTION_NON_LEAF,
-  /* All functions.  */
-  AARCH64_FUNCTION_ALL
+/* The register to use as a thread pointer for TLS accesses.
+   tpidr_el0 by default, but can be changed through the -mtp option.  */
+enum aarch64_tp_reg {
+  AARCH64_TPIDR_EL0 = 0,
+  AARCH64_TPIDR_EL1 = 1,
+  AARCH64_TPIDR_EL2 = 2,
+  AARCH64_TPIDR_EL3 = 3,
+  AARCH64_TPIDRRO_EL0 = 4
 };
 
 /* SVE vector register sizes.  */
@@ -106,6 +106,20 @@ enum stack_protector_guard {
 enum aarch64_key_type {
   AARCH64_KEY_A,
   AARCH64_KEY_B
+};
+
+/* An enum specifying how to handle load and store pairs using
+   a fine-grained policy:
+   - LDP_STP_POLICY_DEFAULT: Use the policy defined in the tuning structure.
+   - LDP_STP_POLICY_ALIGNED: Emit ldp/stp if the source pointer is aligned
+   to at least double the alignment of the type.
+   - LDP_STP_POLICY_ALWAYS: Emit ldp/stp regardless of alignment.
+   - LDP_STP_POLICY_NEVER: Do not emit ldp/stp.  */
+enum aarch64_ldp_stp_policy {
+  AARCH64_LDP_STP_POLICY_DEFAULT,
+  AARCH64_LDP_STP_POLICY_ALIGNED,
+  AARCH64_LDP_STP_POLICY_ALWAYS,
+  AARCH64_LDP_STP_POLICY_NEVER
 };
 
 #endif

@@ -1,5 +1,6 @@
 // { dg-do run { target c++17 } }
 // { dg-require-effective-target std_allocator_new }
+// { dg-xfail-run-if "AIX operator new" { powerpc-ibm-aix* } }
 
 // Copyright (C) 2021-2023 Free Software Foundation, Inc.
 //
@@ -267,6 +268,7 @@ test03()
 int
 main()
 {
+  __gnu_test::counter::scope s;
   test01();
   test02();
   test11();

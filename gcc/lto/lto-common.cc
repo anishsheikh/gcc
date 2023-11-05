@@ -64,8 +64,6 @@ static bool type_streaming_finished = false;
 
 GTY(()) tree first_personality_decl;
 
-GTY(()) const unsigned char *lto_mode_identity_table;
-
 /* Returns a hash code for P.  */
 
 static hashval_t
@@ -958,7 +956,7 @@ lto_register_function_decl_in_symtab (class data_in *data_in, tree decl,
 static void
 lto_maybe_register_decl (class data_in *data_in, tree t, unsigned ix)
 {
-  if (TREE_CODE (t) == VAR_DECL)
+  if (VAR_P (t))
     lto_register_var_decl_in_symtab (data_in, t, ix);
   else if (TREE_CODE (t) == FUNCTION_DECL
 	   && !fndecl_built_in_p (t))
@@ -984,21 +982,25 @@ lto_fixup_prevailing_type (tree t)
       TYPE_NEXT_VARIANT (t) = TYPE_NEXT_VARIANT (mv);
       TYPE_NEXT_VARIANT (mv) = t;
     }
-
-  /* The following reconstructs the pointer chains
-     of the new pointed-to type if we are a main variant.  We do
-     not stream those so they are broken before fixup.  */
-  if (TREE_CODE (t) == POINTER_TYPE
-      && TYPE_MAIN_VARIANT (t) == t)
+  else if (!TYPE_ATTRIBUTES (t))
     {
-      TYPE_NEXT_PTR_TO (t) = TYPE_POINTER_TO (TREE_TYPE (t));
-      TYPE_POINTER_TO (TREE_TYPE (t)) = t;
-    }
-  else if (TREE_CODE (t) == REFERENCE_TYPE
-	   && TYPE_MAIN_VARIANT (t) == t)
-    {
-      TYPE_NEXT_REF_TO (t) = TYPE_REFERENCE_TO (TREE_TYPE (t));
-      TYPE_REFERENCE_TO (TREE_TYPE (t)) = t;
+      /* The following reconstructs the pointer chains
+	 of the new pointed-to type if we are a main variant.  We do
+	 not stream those so they are broken before fixup.
+	 Don't add it if despite being main variant it has
+	 attributes (then it was created with build_distinct_type_copy).
+	 Similarly don't add TYPE_REF_IS_RVALUE REFERENCE_TYPEs.
+	 Don't add it if there is something in the chain already.  */
+      if (TREE_CODE (t) == POINTER_TYPE)
+	{
+	  TYPE_NEXT_PTR_TO (t) = TYPE_POINTER_TO (TREE_TYPE (t));
+	  TYPE_POINTER_TO (TREE_TYPE (t)) = t;
+	}
+      else if (TREE_CODE (t) == REFERENCE_TYPE && !TYPE_REF_IS_RVALUE (t))
+	{
+	  TYPE_NEXT_REF_TO (t) = TYPE_REFERENCE_TO (TREE_TYPE (t));
+	  TYPE_REFERENCE_TO (TREE_TYPE (t)) = t;
+	}
     }
 }
 
@@ -1271,12 +1273,15 @@ compare_tree_sccs_1 (tree t1, tree t2, tree **map)
       if (AGGREGATE_TYPE_P (t1))
 	compare_values (TYPE_TYPELESS_STORAGE);
       compare_values (TYPE_EMPTY_P);
-      compare_values (TYPE_NO_NAMED_ARGS_STDARG_P);
+      if (FUNC_OR_METHOD_TYPE_P (t1))
+	compare_values (TYPE_NO_NAMED_ARGS_STDARG_P);
+      if (RECORD_OR_UNION_TYPE_P (t1))
+	compare_values (TYPE_INCLUDES_FLEXARRAY);
       compare_values (TYPE_PACKED);
       compare_values (TYPE_RESTRICT);
       compare_values (TYPE_USER_ALIGN);
       compare_values (TYPE_READONLY);
-      compare_values (TYPE_PRECISION);
+      compare_values (TYPE_PRECISION_RAW);
       compare_values (TYPE_ALIGN);
       /* Do not compare TYPE_ALIAS_SET.  Doing so introduce ordering issues
 	 with calls to get_alias_set which may initialize it for streamed
@@ -1876,7 +1881,7 @@ lto_read_decls (struct lto_file_decl_data *decl_data, const void *data,
   uint32_t num_decl_states;
 
   lto_input_block ib_main ((const char *) data + main_offset,
-			   header->main_size, decl_data->mode_table);
+			   header->main_size, decl_data);
 
   data_in = lto_data_in_create (decl_data, (const char *) data + string_offset,
 				header->string_size, resolutions);
@@ -2270,7 +2275,8 @@ lto_file_finalize (struct lto_file_decl_data *file_data, lto_file *file,
 #ifdef ACCEL_COMPILER
   lto_input_mode_table (file_data);
 #else
-  file_data->mode_table = lto_mode_identity_table;
+  file_data->mode_table = NULL;
+  file_data->mode_bits = ceil_log2 (MAX_MACHINE_MODE);
 #endif
 
   data = lto_get_summary_section_data (file_data, LTO_section_decls, &len);
@@ -3110,13 +3116,6 @@ lto_fe_init (void)
   memset (&lto_stats, 0, sizeof (lto_stats));
   bitmap_obstack_initialize (NULL);
   gimple_register_cfg_hooks ();
-#ifndef ACCEL_COMPILER
-  unsigned char *table
-    = ggc_vec_alloc<unsigned char> (MAX_MACHINE_MODE);
-  for (int m = 0; m < MAX_MACHINE_MODE; m++)
-    table[m] = m;
-  lto_mode_identity_table = table;
-#endif
 }
 
 #include "gt-lto-lto-common.h"

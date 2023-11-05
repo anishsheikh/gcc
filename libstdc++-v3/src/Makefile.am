@@ -22,6 +22,7 @@
 
 include $(top_srcdir)/fragment.am
 
+if GLIBCXX_HOSTED
 if ENABLE_FILESYSTEM_TS
 filesystem_dir = filesystem
 else
@@ -34,8 +35,16 @@ else
 backtrace_dir =
 endif
 
+experimental_dir = experimental
+else
+filesystem_dir =
+backtrace_dir =
+experimental_dir =
+endif
+
 ## Keep this list sync'd with acinclude.m4:GLIBCXX_CONFIGURE.
-SUBDIRS = c++98 c++11 c++17 c++20 $(filesystem_dir) $(backtrace_dir) experimental
+SUBDIRS = c++98 c++11 c++17 c++20 c++23 \
+	$(filesystem_dir) $(backtrace_dir) $(experimental_dir)
 
 # Cross compiler support.
 if VTV_CYGMIN
@@ -67,6 +76,7 @@ vpath % $(top_srcdir)/src/c++98
 vpath % $(top_srcdir)/src/c++11
 vpath % $(top_srcdir)/src/c++17
 vpath % $(top_srcdir)/src/c++20
+vpath % $(top_srcdir)/src/c++23
 if ENABLE_FILESYSTEM_TS
 vpath % $(top_srcdir)/src/filesystem
 endif
@@ -120,7 +130,13 @@ cxx11_sources = \
 	${cxx0x_compat_sources} \
 	${ldbl_alt128_compat_sources}
 
+if GLIBCXX_HOSTED
 libstdc___la_SOURCES = $(cxx98_sources) $(cxx11_sources)
+else
+# When freestanding, there's currently no compatibility to preserve.  Should
+# that change, any compatibility sources can be added here.
+libstdc___la_SOURCES =
+endif
 
 libstdc___la_LIBADD = \
 	$(GLIBCXX_LIBS) \
@@ -138,8 +154,13 @@ libstdc___la_DEPENDENCIES = \
 	$(top_builddir)/src/c++17/libc++17convenience.la \
 	$(top_builddir)/src/c++20/libc++20convenience.la
 
+if ENABLE_DARWIN_AT_RPATH
+libstdc___darwin_rpath = -Wc,-nodefaultrpaths
+libstdc___darwin_rpath += -Wl,-rpath,@loader_path
+endif
+
 libstdc___la_LDFLAGS = \
-	-version-info $(libtool_VERSION) ${version_arg} -lm
+	-version-info $(libtool_VERSION) ${version_arg} -lm $(libstdc___darwin_rpath)
 
 libstdc___la_LINK = $(CXXLINK) $(libstdc___la_LDFLAGS) $(lt_host_flags)
 
@@ -288,6 +309,7 @@ CXXLINK = \
 	-o $@
 
 # Symbol versioning for shared libraries.
+# See configure.host and configure.ac for port_specific_symbol_files.
 if ENABLE_SYMVERS
 libstdc++-symbols.ver:  ${glibcxx_srcdir}/$(SYMVER_FILE) \
 		$(port_specific_symbol_files)

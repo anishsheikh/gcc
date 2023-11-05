@@ -49,7 +49,8 @@
 #include <type_traits>
 #endif
 
-#define __cpp_lib_incomplete_container_elements 201505L
+#define __glibcxx_want_incomplete_container_elements
+#include <bits/version.h>
 
 namespace std _GLIBCXX_VISIBILITY(default)
 {
@@ -62,7 +63,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
   // Since C++20 the primary template should be used for allocator<void>,
   // but then it would have a non-trivial default ctor and dtor for C++20,
-  // but trivial for C++98-17, which would be an ABI incompatibiliy between
+  // but trivial for C++98-17, which would be an ABI incompatibility between
   // different standard dialects. So C++20 still uses the allocator<void>
   // explicit specialization, with the historical ABI properties, but with
   // the same members that are present in the primary template.

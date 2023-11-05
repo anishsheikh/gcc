@@ -1,7 +1,7 @@
 /**
  * Semantic analysis for D types.
  *
- * Copyright:   Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/typesem.d, _typesem.d)
@@ -27,6 +27,7 @@ import dmd.dclass;
 import dmd.declaration;
 import dmd.denum;
 import dmd.dimport;
+import dmd.dinterpret;
 import dmd.dmangle;
 import dmd.dmodule;
 import dmd.dscope;
@@ -35,6 +36,7 @@ import dmd.dsymbol;
 import dmd.dsymbolsem;
 import dmd.dtemplate;
 import dmd.errors;
+import dmd.errorsink;
 import dmd.expression;
 import dmd.expressionsem;
 import dmd.func;
@@ -46,6 +48,7 @@ import dmd.imphint;
 import dmd.importc;
 import dmd.init;
 import dmd.initsem;
+import dmd.location;
 import dmd.visitor;
 import dmd.mtype;
 import dmd.objc;
@@ -55,7 +58,7 @@ import dmd.root.complex;
 import dmd.root.ctfloat;
 import dmd.root.rmem;
 import dmd.common.outbuffer;
-import dmd.root.rootobject;
+import dmd.rootobject;
 import dmd.root.string;
 import dmd.root.stringtable;
 import dmd.safe;
@@ -119,7 +122,7 @@ private void resolveTupleIndex(const ref Loc loc, Scope* sc, Dsymbol s, out Expr
     const(uinteger_t) d = eindex.toUInteger();
     if (d >= tup.objects.length)
     {
-        .error(loc, "tuple index `%llu` out of bounds `[0 .. %llu]`", d, cast(ulong)tup.objects.length);
+        .error(loc, "sequence index `%llu` out of bounds `[0 .. %llu]`", d, cast(ulong)tup.objects.length);
         pt = Type.terror;
         return;
     }
@@ -161,7 +164,7 @@ private void resolveHelper(TypeQualified mt, const ref Loc loc, Scope* sc, Dsymb
         /* Look for what user might have intended
          */
         const p = mt.mutableOf().unSharedOf().toChars();
-        auto id = Identifier.idPool(p, cast(uint)strlen(p));
+        auto id = Identifier.idPool(p[0 .. strlen(p)]);
         if (const n = importHint(id.toString()))
             error(loc, "`%s` is not defined, perhaps `import %.*s;` ?", p, cast(int)n.length, n.ptr);
         else if (auto s2 = sc.search_correct(id))
@@ -234,7 +237,7 @@ private void resolveHelper(TypeQualified mt, const ref Loc loc, Scope* sc, Dsymb
                 .error(loc, "`%s` is not visible from module `%s`", sm.toPrettyChars(), sc._module.toChars());
                 sm = null;
             }
-            // Same check as in Expression.semanticY(DotIdExp)
+            // Same check as in dotIdSemanticProp(DotIdExp)
             else if (sm.isPackage() && checkAccess(sc, sm.isPackage()))
             {
                 // @@@DEPRECATED_2.106@@@
@@ -284,54 +287,12 @@ private void resolveHelper(TypeQualified mt, const ref Loc loc, Scope* sc, Dsymb
                     return helper3();
             }
         }
+
         if (!sm)
-        {
-            if (!t)
-            {
-                if (s.isDeclaration()) // var, func, or tuple declaration?
-                {
-                    t = s.isDeclaration().type;
-                    if (!t && s.isTupleDeclaration()) // expression tuple?
-                        return helper3();
-                }
-                else if (s.isTemplateInstance() ||
-                         s.isImport() || s.isPackage() || s.isModule())
-                {
-                    return helper3();
-                }
-            }
-            if (t)
-            {
-                sm = t.toDsymbol(sc);
-                if (sm && id.dyncast() == DYNCAST.identifier)
-                {
-                    sm = sm.search(loc, cast(Identifier)id, IgnorePrivateImports);
-                    if (!sm)
-                        return helper3();
-                }
-                else
-                    return helper3();
-            }
-            else
-            {
-                if (id.dyncast() == DYNCAST.dsymbol)
-                {
-                    // searchX already handles errors for template instances
-                    assert(global.errors);
-                }
-                else
-                {
-                    assert(id.dyncast() == DYNCAST.identifier);
-                    sm = s.search_correct(cast(Identifier)id);
-                    if (sm)
-                        error(loc, "identifier `%s` of `%s` is not defined, did you mean %s `%s`?", id.toChars(), mt.toChars(), sm.kind(), sm.toChars());
-                    else
-                        error(loc, "identifier `%s` of `%s` is not defined", id.toChars(), mt.toChars());
-                }
-                pe = ErrorExp.get();
-                return;
-            }
-        }
+            return helper3();
+
+        if (sm.isAliasDeclaration)
+            sm.checkDeprecated(loc, sc);
         s = sm.toAlias();
     }
 
@@ -498,6 +459,17 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
         return t.merge();
     }
 
+    Type visitComplex(TypeBasic t)
+    {
+        if (!(sc.flags & SCOPE.Cfile))
+            return visitType(t);
+
+        auto tc = getComplexLibraryType(loc, sc, t.ty);
+        if (tc.ty == Terror)
+            return tc;
+        return tc.addMod(t.mod).merge();
+    }
+
     Type visitVector(TypeVector mtype)
     {
         const errors = global.errors;
@@ -554,17 +526,15 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
             uinteger_t d = mtype.dim.toUInteger();
             if (d >= tup.objects.length)
             {
-                .error(loc, "tuple index `%llu` out of bounds `[0 .. %llu]`", cast(ulong)d, cast(ulong)tup.objects.length);
+                .error(loc, "sequence index `%llu` out of bounds `[0 .. %llu]`", cast(ulong)d, cast(ulong)tup.objects.length);
                 return error();
             }
 
             RootObject o = (*tup.objects)[cast(size_t)d];
-            if (o.dyncast() != DYNCAST.type)
-            {
-                .error(loc, "`%s` is not a type", mtype.toChars());
-                return error();
-            }
-            return (cast(Type)o).addMod(mtype.mod);
+            if (auto tt = o.isType())
+                return tt.addMod(mtype.mod);
+            .error(loc, "`%s` is not a type", mtype.toChars());
+            return error();
         }
 
         if (t && t.ty == Terror)
@@ -579,6 +549,7 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
         {
             auto errors = global.errors;
             mtype.dim = semanticLength(sc, tbn, mtype.dim);
+            mtype.dim = mtype.dim.implicitCastTo(sc, Type.tsize_t);
             if (errors != global.errors)
                 return error();
 
@@ -635,7 +606,7 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                  * run on them for the size, since they may be forward referenced.
                  */
                 bool overflow = false;
-                if (mulu(tbn.size(loc), d2, overflow) >= target.maxStaticDataSize || overflow)
+                if (mulu(tbn.size(loc), d2, overflow) > target.maxStaticDataSize || overflow)
                     return overflowError();
             }
         }
@@ -649,7 +620,7 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                 uinteger_t d = mtype.dim.toUInteger();
                 if (d >= tt.arguments.length)
                 {
-                    .error(loc, "tuple index `%llu` out of bounds `[0 .. %llu]`", cast(ulong)d, cast(ulong)tt.arguments.length);
+                    .error(loc, "sequence index `%llu` out of bounds `[0 .. %llu]`", cast(ulong)d, cast(ulong)tt.arguments.length);
                     return error();
                 }
                 Type telem = (*tt.arguments)[cast(size_t)d].type;
@@ -1200,8 +1171,8 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                             StorageClass stc2 =   narg.storageClass & (STC.ref_ | STC.out_ | STC.lazy_);
                             if (stc1 && stc2 && stc1 != stc2)
                             {
-                                OutBuffer buf1;  stcToBuffer(&buf1, stc1 | ((stc1 & STC.ref_) ? (fparam.storageClass & STC.auto_) : 0));
-                                OutBuffer buf2;  stcToBuffer(&buf2, stc2);
+                                OutBuffer buf1;  stcToBuffer(buf1, stc1 | ((stc1 & STC.ref_) ? (fparam.storageClass & STC.auto_) : 0));
+                                OutBuffer buf2;  stcToBuffer(buf2, stc2);
 
                                 .error(loc, "incompatible parameter storage classes `%s` and `%s`",
                                     buf1.peekChars(), buf2.peekChars());
@@ -1209,7 +1180,7 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                                 stc = stc1 | (stc & ~(STC.ref_ | STC.out_ | STC.lazy_));
                             }
                             (*newparams)[j] = new Parameter(
-                                stc, narg.type, narg.ident, narg.defaultArg, narg.userAttribDecl);
+                                loc, stc, narg.type, narg.ident, narg.defaultArg, narg.userAttribDecl);
                         }
                         fparam.type = new TypeTuple(newparams);
                         fparam.type = fparam.type.typeSemantic(loc, argsc);
@@ -1226,19 +1197,31 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
 
                 // -preview=in: Always add `ref` when used with `extern(C++)` functions
                 // Done here to allow passing opaque types with `in`
-                if (global.params.previewIn && (fparam.storageClass & (STC.in_ | STC.ref_)) == STC.in_)
+                if ((fparam.storageClass & (STC.in_ | STC.ref_)) == STC.in_)
                 {
                     switch (tf.linkage)
                     {
                     case LINK.cpp:
-                        fparam.storageClass |= STC.ref_;
+                        if (global.params.previewIn)
+                            fparam.storageClass |= STC.ref_;
                         break;
                     case LINK.default_, LINK.d:
                         break;
                     default:
-                        .error(loc, "cannot use `in` parameters with `extern(%s)` functions",
-                               linkageToChars(tf.linkage));
-                        .errorSupplemental(loc, "parameter `%s` declared as `in` here", fparam.toChars());
+                        if (global.params.previewIn)
+                        {
+                            .error(loc, "cannot use `in` parameters with `extern(%s)` functions",
+                                   linkageToChars(tf.linkage));
+                            .errorSupplemental(loc, "parameter `%s` declared as `in` here", fparam.toChars());
+                        }
+                        else
+                        {
+                            // Note that this deprecation will not trigger on `in ref` / `ref in`
+                            // parameters, however the parser will trigger a deprecation on them.
+                            .deprecation(loc, "using `in` parameters with `extern(%s)` functions is deprecated",
+                                         linkageToChars(tf.linkage));
+                            .deprecationSupplemental(loc, "parameter `%s` declared as `in` here", fparam.toChars());
+                        }
                         break;
                     }
                 }
@@ -1284,20 +1267,7 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
 
                 if (fparam.storageClass & STC.return_)
                 {
-                    if (fparam.isReference())
-                    {
-                        // Disabled for the moment awaiting improvement to allow return by ref
-                        // to be transformed into return by scope.
-                        if (0 && !tf.isref)
-                        {
-                            auto stc = fparam.storageClass & (STC.ref_ | STC.out_);
-                            .error(loc, "parameter `%s` is `return %s` but function does not return by `ref`",
-                                fparam.ident ? fparam.ident.toChars() : "",
-                                stcToString(stc).ptr);
-                            errors = true;
-                        }
-                    }
-                    else
+                    if (!fparam.isReference())
                     {
                         if (!(fparam.storageClass & STC.scope_))
                             fparam.storageClass |= STC.scope_ | STC.scopeinferred; // 'return' implies 'scope'
@@ -1346,28 +1316,6 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                     //    error(loc, "inout on parameter means inout must be on return type as well (if from D1 code, replace with `ref`)");
                 }
 
-                /* Scope attribute is not necessary if the parameter type does not have pointers
-                 */
-                const sr = buildScopeRef(fparam.storageClass);
-                switch (sr)
-                {
-                    case ScopeRef.Scope:
-                    case ScopeRef.RefScope:
-                    case ScopeRef.ReturnRef_Scope:
-                        if (!fparam.type.hasPointers())
-                            fparam.storageClass &= ~STC.scope_;
-                        break;
-
-                    case ScopeRef.ReturnScope:
-                    case ScopeRef.Ref_ReturnScope:
-                        if (!fparam.type.hasPointers())
-                            fparam.storageClass &= ~(STC.return_ | STC.scope_ | STC.returnScope);
-                        break;
-
-                    default:
-                        break;
-                }
-
                 // Remove redundant storage classes for type, they are already applied
                 fparam.storageClass &= ~(STC.TYPECTOR);
 
@@ -1388,7 +1336,6 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
             // extended index), as we need to run semantic when `oidx` changes.
             size_t tupleOrigIdx = size_t.max;
             size_t tupleExtIdx = size_t.max;
-            bool hasDefault;
             foreach (oidx, oparam, eidx, eparam; tf.parameterList)
             {
                 // oparam (original param) will always have the default arg
@@ -1397,7 +1344,6 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                 // position to get the offset in it later on.
                 if (oparam.defaultArg)
                 {
-                    hasDefault = true;
                     // Get the obvious case out of the way
                     if (oparam is eparam)
                         errors |= !defaultArgSemantic(eparam, argsc);
@@ -1423,11 +1369,6 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
                         if (te && te.exps && te.exps.length)
                             eparam.defaultArg = (*te.exps)[eidx - tupleExtIdx];
                     }
-                }
-                else if (hasDefault)
-                {
-                    .error(loc, "default argument expected for `%s`", oparam.toChars());
-                    errors = true;
                 }
 
                 // We need to know the default argument to resolve `auto ref`,
@@ -1742,7 +1683,7 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
         Type tbn = tn.toBasetype();
         if (tbn.ty != Ttuple)
         {
-            .error(loc, "can only slice tuple types, not `%s`", tbn.toChars());
+            .error(loc, "can only slice type sequences, not `%s`", tbn.toChars());
             return error();
         }
         TypeTuple tt = cast(TypeTuple)tbn;
@@ -1847,12 +1788,14 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
 
                 case TOK.struct_:
                     auto sd = new StructDeclaration(mtype.loc, mtype.id, false);
+                    sd.alignment = mtype.packalign;
                     declare(sd);
                     mtype.resolved = visitStruct(new TypeStruct(sd));
                     break;
 
                 case TOK.union_:
                     auto ud = new UnionDeclaration(mtype.loc, mtype.id);
+                    ud.alignment = mtype.packalign;
                     declare(ud);
                     mtype.resolved = visitStruct(new TypeStruct(ud));
                     break;
@@ -1989,6 +1932,9 @@ extern(C++) Type typeSemantic(Type type, const ref Loc loc, Scope* sc)
     switch (type.ty)
     {
         default:         return visitType(type);
+        case Tcomplex32:
+        case Tcomplex64:
+        case Tcomplex80: return visitComplex(type.isTypeBasic());
         case Tvector:    return visitVector(type.isTypeVector());
         case Tsarray:    return visitSArray(type.isTypeSArray());
         case Tarray:     return visitDArray(type.isTypeDArray());
@@ -2059,7 +2005,7 @@ extern (C++) Type merge(Type type)
         OutBuffer buf;
         buf.reserve(32);
 
-        mangleToBuffer(type, &buf);
+        mangleToBuffer(type, buf);
 
         auto sv = type.stringtable.update(buf[]);
         if (sv.value)
@@ -2144,6 +2090,7 @@ Expression getProperty(Type t, Scope* scope_, const ref Loc loc, Identifier iden
             {
                 e = new StringExp(loc, mt.deco.toDString());
                 Scope sc;
+                sc.eSink = global.errorSink;
                 e = e.expressionSemantic(&sc);
             }
         }
@@ -2152,6 +2099,7 @@ Expression getProperty(Type t, Scope* scope_, const ref Loc loc, Identifier iden
             const s = mt.toChars();
             e = new StringExp(loc, s.toDString());
             Scope sc;
+            sc.eSink = global.errorSink;
             e = e.expressionSemantic(&sc);
         }
         else if (flag && mt != Type.terror)
@@ -2182,7 +2130,9 @@ Expression getProperty(Type t, Scope* scope_, const ref Loc loc, Identifier iden
                         error(loc, "no property `%s` for `%s` of type `%s`", ident.toChars(), src.toChars(), mt.toPrettyChars(true));
                     else
                         error(loc, "no property `%s` for type `%s`", ident.toChars(), mt.toPrettyChars(true));
+
                     if (auto dsym = mt.toDsymbol(scope_))
+                    {
                         if (auto sym = dsym.isAggregateDeclaration())
                         {
                             if (auto fd = search_function(sym, Id.opDispatch))
@@ -2190,6 +2140,9 @@ Expression getProperty(Type t, Scope* scope_, const ref Loc loc, Identifier iden
                             else if (!sym.members)
                                 errorSupplemental(sym.loc, "`%s %s` is opaque and has no members.", sym.kind, mt.toPrettyChars(true));
                         }
+                        errorSupplemental(dsym.loc, "%s `%s` defined here",
+                            dsym.kind, dsym.toChars());
+                    }
                 }
             }
             e = ErrorExp.get();
@@ -2489,7 +2442,7 @@ Expression getProperty(Type t, Scope* scope_, const ref Loc loc, Identifier iden
         }
         else
         {
-            error(loc, "no property `%s` for tuple `%s`", ident.toChars(), mt.toChars());
+            error(loc, "no property `%s` for sequence `%s`", ident.toChars(), mt.toChars());
             e = ErrorExp.get();
         }
         return e;
@@ -2616,7 +2569,7 @@ void resolve(Type mt, const ref Loc loc, Scope* sc, out Expression pe, out Type 
                 const d = mt.dim.toUInteger();
                 if (d >= tup.objects.length)
                 {
-                    error(loc, "tuple index `%llu` out of bounds `[0 .. %llu]`", d, cast(ulong) tup.objects.length);
+                    error(loc, "sequence index `%llu` out of bounds `[0 .. %llu]`", d, cast(ulong) tup.objects.length);
                     return returnError();
                 }
 
@@ -2758,7 +2711,7 @@ void resolve(Type mt, const ref Loc loc, Scope* sc, out Expression pe, out Type 
             {
                 void semanticOnMixin(Dsymbol member)
                 {
-                    if (auto compileDecl = member.isCompileDeclaration())
+                    if (auto compileDecl = member.isMixinDeclaration())
                         compileDecl.dsymbolSemantic(sc);
                     else if (auto mixinTempl = member.isTemplateMixin())
                         mixinTempl.dsymbolSemantic(sc);
@@ -2857,8 +2810,10 @@ void resolve(Type mt, const ref Loc loc, Scope* sc, out Expression pe, out Type 
         }
         mt.exp = exp2;
 
-        if (mt.exp.op == EXP.type ||
-            mt.exp.op == EXP.scope_)
+        if ((mt.exp.op == EXP.type || mt.exp.op == EXP.scope_) &&
+            // https://issues.dlang.org/show_bug.cgi?id=23863
+            // compile time sequences are valid types
+            !mt.exp.type.isTypeTuple())
         {
             if (!(sc.flags & SCOPE.Cfile) && // in (extended) C typeof may be used on types as with sizeof
                 mt.exp.checkType())
@@ -3187,7 +3142,7 @@ void resolve(Type mt, const ref Loc loc, Scope* sc, out Expression pe, out Type 
  * Returns:
  *  resulting expression with e.ident resolved
  */
-Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
+Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, DotExpFlag flag)
 {
     Expression visitType(Type mt)
     {
@@ -3440,7 +3395,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         {
             if (e.op == EXP.type)
             {
-                e.error("`%s` is not an expression", e.toChars());
+                error(e.loc, "`%s` is not an expression", e.toChars());
                 return ErrorExp.get();
             }
             else if (mt.dim.toUInteger() < 1 && checkUnsafeDotExp(sc, e, ident, flag))
@@ -3455,7 +3410,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         {
             if (e.isTypeExp())
             {
-                e.error("`.tupleof` cannot be used on type `%s`", mt.toChars);
+                error(e.loc, "`.tupleof` cannot be used on type `%s`", mt.toChars);
                 return ErrorExp.get();
             }
             else
@@ -3489,7 +3444,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         }
         if (e.op == EXP.type && (ident == Id.length || ident == Id.ptr))
         {
-            e.error("`%s` is not an expression", e.toChars());
+            error(e.loc, "`%s` is not an expression", e.toChars());
             return ErrorExp.get();
         }
         if (ident == Id.length)
@@ -3535,7 +3490,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
             if (fd_aaLen is null)
             {
                 auto fparams = new Parameters();
-                fparams.push(new Parameter(STC.const_ | STC.scope_, mt, null, null, null));
+                fparams.push(new Parameter(Loc.initial, STC.const_ | STC.scope_, mt, null, null, null));
                 fd_aaLen = FuncDeclaration.genCfunc(fparams, Type.tsize_t, Id.aaLen);
                 TypeFunction tf = fd_aaLen.type.toTypeFunction();
                 tf.purity = PURE.const_;
@@ -3657,7 +3612,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                 e = build_overload(e.loc, sc, e, null, fd);
                 // @@@DEPRECATED_2.110@@@.
                 // Deprecated in 2.082, made an error in 2.100.
-                e.error("`opDot` is obsolete. Use `alias this`");
+                error(e.loc, "`opDot` is obsolete. Use `alias this`");
                 return ErrorExp.get();
             }
 
@@ -3672,7 +3627,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                 TemplateDeclaration td = fd.isTemplateDeclaration();
                 if (!td)
                 {
-                    fd.error("must be a template `opDispatch(string s)`, not a %s", fd.kind());
+                    .error(fd.loc, "%s `%s` must be a template `opDispatch(string s)`, not a %s", fd.kind, fd.toPrettyChars, fd.kind());
                     return returnExp(ErrorExp.get());
                 }
                 auto se = new StringExp(e.loc, ident.toString());
@@ -3685,7 +3640,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                  *  template opDispatch(name) if (isValid!name) { ... }
                  */
                 uint errors = gagError ? global.startGagging() : 0;
-                e = dti.semanticY(sc, 0);
+                e = dti.dotTemplateSemanticProp(sc, DotExpFlag.none);
                 if (gagError && global.endGagging(errors))
                     e = null;
                 return returnExp(e);
@@ -3703,7 +3658,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                 auto die = new DotIdExp(e.loc, alias_e, ident);
 
                 auto errors = gagError ? 0 : global.startGagging();
-                auto exp = die.semanticY(sc, gagError);
+                auto exp = die.dotIdSemanticProp(sc, gagError);
                 if (!gagError)
                 {
                     global.endGagging(errors);
@@ -3791,6 +3746,9 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         {
             return noMember(mt, sc, e, ident, flag);
         }
+        // check before alias resolution; the alias itself might be deprecated!
+        if (s.isAliasDeclaration)
+            e.checkDeprecated(sc, s);
         s = s.toAlias();
 
         if (auto em = s.isEnumMember())
@@ -3805,9 +3763,9 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                 !v.type.deco && v.inuse)
             {
                 if (v.inuse) // https://issues.dlang.org/show_bug.cgi?id=9494
-                    e.error("circular reference to %s `%s`", v.kind(), v.toPrettyChars());
+                    error(e.loc, "circular reference to %s `%s`", v.kind(), v.toPrettyChars());
                 else
-                    e.error("forward reference to %s `%s`", v.kind(), v.toPrettyChars());
+                    error(e.loc, "forward reference to %s `%s`", v.kind(), v.toPrettyChars());
                 return ErrorExp.get();
             }
             if (v.type.ty == Terror)
@@ -3819,7 +3777,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
             {
                 if (v.inuse)
                 {
-                    e.error("circular initialization of %s `%s`", v.kind(), v.toPrettyChars());
+                    error(e.loc, "circular initialization of %s `%s`", v.kind(), v.toPrettyChars());
                     return ErrorExp.get();
                 }
                 checkAccess(e.loc, sc, null, v);
@@ -3893,7 +3851,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         Declaration d = s.isDeclaration();
         if (!d)
         {
-            e.error("`%s.%s` is not a declaration", e.toChars(), ident.toChars());
+            error(e.loc, "`%s.%s` is not a declaration", e.toChars(), ident.toChars());
             return ErrorExp.get();
         }
 
@@ -3911,8 +3869,15 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
             {
                 /* Rewrite as:
                  *  this.d
+                 *
+                 * only if the scope in which we are
+                 * has a `this` that matches the type
+                 * of the lhs of the dot expression.
+                 *
+                 * https://issues.dlang.org/show_bug.cgi?id=23617
                  */
-                if (hasThis(sc))
+                auto fd = hasThis(sc);
+                if (fd && fd.isThis() == mt.sym)
                 {
                     e = new DotVarExp(e.loc, new ThisExp(e.loc), d);
                     return e.expressionSemantic(sc);
@@ -3959,21 +3924,30 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         Dsymbol s = mt.sym.search(e.loc, ident);
         if (!s)
         {
-            if (ident == Id.max || ident == Id.min || ident == Id._init)
+            if (ident == Id._init)
             {
                 return mt.getProperty(sc, e.loc, ident, flag & 1);
             }
 
-            Expression res = mt.sym.getMemtype(Loc.initial).dotExp(sc, e, ident, 1);
+            /* Allow special enums to not need a member list
+             */
+            if ((ident == Id.max || ident == Id.min) && (mt.sym.members || !mt.sym.isSpecial()))
+            {
+                return mt.getProperty(sc, e.loc, ident, flag & 1);
+            }
+
+            Expression res = mt.sym.getMemtype(Loc.initial).dotExp(sc, e, ident, DotExpFlag.gag);
             if (!(flag & 1) && !res)
             {
                 if (auto ns = mt.sym.search_correct(ident))
-                    e.error("no property `%s` for type `%s`. Did you mean `%s.%s` ?", ident.toChars(), mt.toChars(), mt.toChars(),
+                    error(e.loc, "no property `%s` for type `%s`. Did you mean `%s.%s` ?", ident.toChars(), mt.toChars(), mt.toChars(),
                         ns.toChars());
                 else
-                    e.error("no property `%s` for type `%s`", ident.toChars(),
+                    error(e.loc, "no property `%s` for type `%s`", ident.toChars(),
                         mt.toChars());
 
+                errorSupplemental(mt.sym.loc, "%s `%s` defined here",
+                    mt.sym.kind, mt.toChars());
                 return ErrorExp.get();
             }
             return res;
@@ -4216,13 +4190,14 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                 !v.type.deco && v.inuse)
             {
                 if (v.inuse) // https://issues.dlang.org/show_bug.cgi?id=9494
-                    e.error("circular reference to %s `%s`", v.kind(), v.toPrettyChars());
+                    error(e.loc, "circular reference to %s `%s`", v.kind(), v.toPrettyChars());
                 else
-                    e.error("forward reference to %s `%s`", v.kind(), v.toPrettyChars());
+                    error(e.loc, "forward reference to %s `%s`", v.kind(), v.toPrettyChars());
                 return ErrorExp.get();
             }
             if (v.type.ty == Terror)
             {
+                error(e.loc, "type of variable `%s` has errors", v.toPrettyChars);
                 return ErrorExp.get();
             }
 
@@ -4230,7 +4205,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
             {
                 if (v.inuse)
                 {
-                    e.error("circular initialization of %s `%s`", v.kind(), v.toPrettyChars());
+                    error(e.loc, "circular initialization of %s `%s`", v.kind(), v.toPrettyChars());
                     return ErrorExp.get();
                 }
                 checkAccess(e.loc, sc, null, v);
@@ -4309,7 +4284,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
         Declaration d = s.isDeclaration();
         if (!d)
         {
-            e.error("`%s.%s` is not a declaration", e.toChars(), ident.toChars());
+            error(e.loc, "`%s.%s` is not a declaration", e.toChars(), ident.toChars());
             return ErrorExp.get();
         }
 
@@ -4331,6 +4306,7 @@ Expression dotExp(Type mt, Scope* sc, Expression e, Identifier ident, int flag)
                 && d.isFuncDeclaration().objc.selector)
             {
                 auto classRef = new ObjcClassReferenceExp(e.loc, mt.sym);
+                classRef.type = objc.getRuntimeMetaclass(mt.sym).getType();
                 return new DotVarExp(e.loc, classRef, d).expressionSemantic(sc);
             }
             else if (d.needThis() && sc.intypeof != 1)
@@ -4645,6 +4621,74 @@ extern (C++) Expression defaultInit(Type mt, const ref Loc loc, const bool isCfi
     }
 }
 
+
+/**********************************************
+ * Extract complex type from core.stdc.config
+ * Params:
+ *      loc = for error messages
+ *      sc = context
+ *      ty = a complex or imaginary type
+ * Returns:
+ *      Complex!float, Complex!double, Complex!real or null for error
+ */
+
+Type getComplexLibraryType(const ref Loc loc, Scope* sc, TY ty)
+{
+    // singleton
+    __gshared Type complex_float;
+    __gshared Type complex_double;
+    __gshared Type complex_real;
+
+    Type* pt;
+    Identifier id;
+    switch (ty)
+    {
+        case Timaginary32:
+        case Tcomplex32:   id = Id.c_complex_float;  pt = &complex_float;  break;
+        case Timaginary64:
+        case Tcomplex64:   id = Id.c_complex_double; pt = &complex_double; break;
+        case Timaginary80:
+        case Tcomplex80:   id = Id.c_complex_real;   pt = &complex_real;   break;
+        default:
+             return Type.terror;
+    }
+
+    if (*pt)
+        return *pt;
+    *pt = Type.terror;
+
+    Module mConfig = Module.loadCoreStdcConfig();
+    if (!mConfig)
+    {
+        error(loc, "`core.stdc.config` is required for complex numbers");
+        return *pt;
+    }
+
+    Dsymbol s = mConfig.searchX(Loc.initial, sc, id, IgnorePrivateImports);
+    if (!s)
+    {
+        error(loc, "`%s` not found in core.stdc.config", id.toChars());
+        return *pt;
+    }
+    s = s.toAlias();
+    if (auto t = s.getType())
+    {
+        if (auto ts = t.toBasetype().isTypeStruct())
+        {
+            *pt = ts;
+            return ts;
+        }
+    }
+    if (auto sd = s.isStructDeclaration())
+    {
+        *pt = sd.type;
+        return sd.type;
+    }
+
+    error(loc, "`%s` must be an alias for a complex struct", s.toChars());
+    return *pt;
+}
+
 /******************************* Private *****************************************/
 
 private:
@@ -4758,7 +4802,7 @@ Type stripDefaultArgs(Type t)
         {
             Type t = stripDefaultArgs(p.type);
             return (t != p.type || p.defaultArg || p.ident || p.userAttribDecl)
-                ? new Parameter(p.storageClass, t, null, null, null)
+                ? new Parameter(p.loc, p.storageClass, t, null, null, null)
                 : null;
         }
 
@@ -4868,7 +4912,7 @@ Expression getMaxMinValue(EnumDeclaration ed, const ref Loc loc, Identifier id)
 
     if (ed.inuse)
     {
-        ed.error(loc, "recursive definition of `.%s` property", id.toChars());
+        .error(loc, "%s `%s` recursive definition of `.%s` property", ed.kind, ed.toPrettyChars, id.toChars());
         return errorReturn();
     }
     if (*pval)
@@ -4880,19 +4924,12 @@ Expression getMaxMinValue(EnumDeclaration ed, const ref Loc loc, Identifier id)
         return errorReturn();
     if (!ed.members)
     {
-        if (ed.isSpecial())
-        {
-            /* Allow these special enums to not need a member list
-             */
-            return ed.memtype.getProperty(ed._scope, loc, id, 0);
-        }
-
-        ed.error(loc, "is opaque and has no `.%s`", id.toChars());
+        .error(loc, "%s `%s` is opaque and has no `.%s`", ed.kind, ed.toPrettyChars, id.toChars(), id.toChars());
         return errorReturn();
     }
     if (!(ed.memtype && ed.memtype.isintegral()))
     {
-        ed.error(loc, "has no `.%s` property because base type `%s` is not an integral type",
+        .error(loc, "%s `%s` has no `.%s` property because base type `%s` is not an integral type", ed.kind, ed.toPrettyChars, id.toChars(),
               id.toChars(), ed.memtype ? ed.memtype.toChars() : "");
         return errorReturn();
     }
@@ -4911,7 +4948,7 @@ Expression getMaxMinValue(EnumDeclaration ed, const ref Loc loc, Identifier id)
 
         if (em.semanticRun < PASS.semanticdone)
         {
-            em.error("is forward referenced looking for `.%s`", id.toChars());
+            .error(em.loc, "%s `%s` is forward referenced looking for `.%s`", em.kind, em.toPrettyChars, id.toChars());
             ed.errors = true;
             continue;
         }
@@ -4962,7 +4999,7 @@ Expression getMaxMinValue(EnumDeclaration ed, const ref Loc loc, Identifier id)
  * Return:
  *      null if error, else RootObject AST as parsed
  */
-RootObject compileTypeMixin(TypeMixin tm, Loc loc, Scope* sc)
+RootObject compileTypeMixin(TypeMixin tm, ref const Loc loc, Scope* sc)
 {
     OutBuffer buf;
     if (expressionsToString(buf, sc, tm.exps))
@@ -4972,7 +5009,10 @@ RootObject compileTypeMixin(TypeMixin tm, Loc loc, Scope* sc)
     const len = buf.length;
     buf.writeByte(0);
     const str = buf.extractSlice()[0 .. len];
-    scope p = new Parser!ASTCodegen(loc, sc._module, str, false);
+    const bool doUnittests = global.params.useUnitTests || global.params.ddoc.doOutput || global.params.dihdr.doOutput;
+    auto locm = adjustLocForMixin(str, loc, global.params.mixinOut);
+    scope p = new Parser!ASTCodegen(locm, sc._module, str, false, global.errorSink, &global.compileEnv, doUnittests);
+    p.transitionIn = global.params.v.vin;
     p.nextToken();
     //printf("p.loc.linnum = %d\n", p.loc.linnum);
 
@@ -4984,7 +5024,10 @@ RootObject compileTypeMixin(TypeMixin tm, Loc loc, Scope* sc)
     }
     if (p.token.value != TOK.endOfFile)
     {
-        .error(loc, "incomplete mixin type `%s`", str.ptr);
+        .error(loc, "unexpected token `%s` after type `%s`",
+            p.token.toChars(), o.toChars());
+        .errorSupplemental(loc, "while parsing string mixin type `%s`",
+            str.ptr);
         return null;
     }
 

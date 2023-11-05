@@ -1,6 +1,8 @@
 /* { dg-do run } */
 /* { dg-options "-O2" } */
 
+#include "builtin-object-size-common.h"
+
 typedef __SIZE_TYPE__ size_t;
 #define abort __builtin_abort
 
@@ -314,6 +316,71 @@ test_dynarray_struct_subobj2 (size_t sz, size_t off, size_t *objsz)
   return __builtin_dynamic_object_size (&bin.c[off], 1);
 }
 
+/* See pr #108522.  */
+
+#define DEFSTRUCT(_s, _n) \
+  struct DS								      \
+    {									      \
+      char a[_n];							      \
+      unsigned long long b;						      \
+      int c;								      \
+      char d[2 * _n];							      \
+    } _s
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_member_b (size_t sz)
+{
+  DEFSTRUCT (s, sz);
+
+  return __builtin_dynamic_object_size (&s.b, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_member_c (size_t sz)
+{
+  DEFSTRUCT (s, sz);
+
+  return __builtin_dynamic_object_size (&s.c, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_member_d (size_t sz, size_t offset)
+{
+  DEFSTRUCT (s, sz);
+
+  return __builtin_dynamic_object_size (&s.d[offset], 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_member_subobj_b (size_t sz)
+{
+  DEFSTRUCT (s, sz);
+
+  return __builtin_dynamic_object_size (&s.b, 1);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_member_subobj_c (size_t sz)
+{
+  DEFSTRUCT (s, sz);
+
+  return __builtin_dynamic_object_size (&s.c, 1);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_member_subobj_d (size_t sz, size_t offset)
+{
+  DEFSTRUCT (s, sz);
+
+  return __builtin_dynamic_object_size (&s.d[offset], 1);
+}
+
 size_t
 __attribute__ ((noinline))
 test_substring (size_t sz, size_t off)
@@ -388,7 +455,6 @@ test_parmsz_simple2 (size_t sz, char obj[])
   return __builtin_dynamic_object_size (obj, 0);
 }
 
-/* Implicitly constructed access attributes not supported yet.  */
 size_t
 __attribute__ ((noinline))
 test_parmsz_simple3 (size_t sz, char obj[sz])
@@ -456,6 +522,13 @@ test_parmsz_internal2 (size_t sz, double obj[][sz])
 size_t
 __attribute__ ((noinline))
 test_parmsz_internal3 (size_t sz1, size_t sz2, double obj[sz1][sz2])
+{
+  return __builtin_dynamic_object_size (obj, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_parmsz_internal4 (size_t sz1, size_t sz2, double obj[sz1 + 1][4])
 {
   return __builtin_dynamic_object_size (obj, 0);
 }
@@ -539,13 +612,6 @@ test_pr105736 (struct TV4 *a)
   return &a->v[0];
 }
 
-unsigned nfails = 0;
-
-#define FAIL() ({ \
-  __builtin_printf ("Failure at line: %d\n", __LINE__);			      \
-  nfails++;								      \
-})
-
 int
 main (int argc, char **argv)
 {
@@ -619,6 +685,24 @@ main (int argc, char **argv)
   if (test_dynarray_struct_subobj2 (42, 4, &objsz)
     != objsz - 4 - sizeof (long) - sizeof (int))
     FAIL ();
+  DEFSTRUCT(ds, 64);
+  const size_t n = sizeof (ds.a);
+  if (test_dynarray_struct_member_b (n)
+      != sizeof (ds) - __builtin_offsetof (struct DS, b))
+    FAIL ();
+  if (test_dynarray_struct_member_c (n)
+      != sizeof (ds) - __builtin_offsetof (struct DS, c))
+    FAIL ();
+  if (test_dynarray_struct_member_d (n, 0)
+      != sizeof (ds) - __builtin_offsetof (struct DS, d))
+    FAIL ();
+  if (test_dynarray_struct_member_subobj_b (n) != sizeof (ds.b))
+    FAIL ();
+  if (test_dynarray_struct_member_subobj_c (n) != sizeof (ds.c))
+    FAIL ();
+  if (test_dynarray_struct_member_subobj_d (n, n - 2)
+      != sizeof (ds) - __builtin_offsetof (struct DS, d) - n + 2)
+    FAIL ();
   if (test_substring_ptrplus (128, 4) != (128 - 4) * sizeof (int))
     FAIL ();
   if (test_substring_ptrplus (128, 142) != 0)
@@ -643,8 +727,8 @@ main (int argc, char **argv)
   if (test_parmsz_simple2 (__builtin_strlen (argv[0]) + 1, argv[0])
       != __builtin_strlen (argv[0]) + 1)
     FAIL ();
-  /* Only explicitly added access attributes are supported for now.  */
-  if (test_parmsz_simple3 (__builtin_strlen (argv[0]) + 1, argv[0]) != -1)
+  if (test_parmsz_simple3 (__builtin_strlen (argv[0]) + 1, argv[0]) 
+      != __builtin_strlen (argv[0]) + 1)
     FAIL ();
   int arr[42];
   if (test_parmsz_scaled (arr, 42) != sizeof (arr))
@@ -681,6 +765,8 @@ main (int argc, char **argv)
     FAIL ();
   if (test_parmsz_internal3 (4, 4, obj) != -1)
     FAIL ();
+  if (test_parmsz_internal4 (3, 4, obj) != -1)
+    FAIL ();
   if (test_loop (arr, 42, 0, 32, 1) != 10 * sizeof (int))
     FAIL ();
   if (test_loop (arr, 42, 32, -1, -1) != 0)
@@ -707,8 +793,5 @@ main (int argc, char **argv)
   if (test_strndup_min (str, 4) != 1)
     FAIL ();
 
-  if (nfails > 0)
-    __builtin_abort ();
-
-  return 0;
+  DONE ();
 }

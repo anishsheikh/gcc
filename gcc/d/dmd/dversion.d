@@ -4,7 +4,7 @@
  * Specification: $(LINK2 https://dlang.org/spec/version.html#version-specification, Version Specification),
  *                $(LINK2 https://dlang.org/spec/version.html#debug_specification, Debug Specification).
  *
- * Copyright:   Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/dversion.d, _dversion.d)
@@ -20,8 +20,10 @@ import dmd.dmodule;
 import dmd.dscope;
 import dmd.dsymbol;
 import dmd.dsymbolsem;
+import dmd.errors;
 import dmd.globals;
 import dmd.identifier;
+import dmd.location;
 import dmd.common.outbuffer;
 import dmd.visitor;
 
@@ -34,12 +36,12 @@ extern (C++) final class DebugSymbol : Dsymbol
 {
     uint level;
 
-    extern (D) this(const ref Loc loc, Identifier ident)
+    extern (D) this(const ref Loc loc, Identifier ident) @safe
     {
         super(loc, ident);
     }
 
-    extern (D) this(const ref Loc loc, uint level)
+    extern (D) this(const ref Loc loc, uint level) @safe
     {
         super(loc, null);
         this.level = level;
@@ -76,14 +78,14 @@ extern (C++) final class DebugSymbol : Dsymbol
         {
             if (!m)
             {
-                error("declaration must be at module level");
+                .error(loc, "%s `%s` declaration must be at module level", kind, toPrettyChars);
                 errors = true;
             }
             else
             {
                 if (findCondition(m.debugidsNot, ident))
                 {
-                    error("defined after use");
+                    .error(loc, "%s `%s` defined after use", kind, toPrettyChars);
                     errors = true;
                 }
                 if (!m.debugids)
@@ -95,7 +97,7 @@ extern (C++) final class DebugSymbol : Dsymbol
         {
             if (!m)
             {
-                error("level declaration must be at module level");
+                .error(loc, "%s `%s` level declaration must be at module level", kind, toPrettyChars);
                 errors = true;
             }
             else
@@ -128,12 +130,12 @@ extern (C++) final class VersionSymbol : Dsymbol
 {
     uint level;
 
-    extern (D) this(const ref Loc loc, Identifier ident)
+    extern (D) this(const ref Loc loc, Identifier ident) @safe
     {
         super(loc, ident);
     }
 
-    extern (D) this(const ref Loc loc, uint level)
+    extern (D) this(const ref Loc loc, uint level) @safe
     {
         super(loc, null);
         this.level = level;
@@ -171,14 +173,14 @@ extern (C++) final class VersionSymbol : Dsymbol
             VersionCondition.checkReserved(loc, ident.toString());
             if (!m)
             {
-                error("declaration must be at module level");
+                .error(loc, "%s `%s` declaration must be at module level", kind, toPrettyChars);
                 errors = true;
             }
             else
             {
                 if (findCondition(m.versionidsNot, ident))
                 {
-                    error("defined after use");
+                    .error(loc, "%s `%s` defined after use", kind, toPrettyChars);
                     errors = true;
                 }
                 if (!m.versionids)
@@ -190,7 +192,7 @@ extern (C++) final class VersionSymbol : Dsymbol
         {
             if (!m)
             {
-                error("level declaration must be at module level");
+                .error(loc, "%s `%s` level declaration must be at module level", kind, toPrettyChars);
                 errors = true;
             }
             else

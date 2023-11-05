@@ -607,7 +607,8 @@ static void sparc_emit_set_const64 (rtx, rtx);
 static void sparc_output_addr_vec (rtx);
 static void sparc_output_addr_diff_vec (rtx);
 static void sparc_output_deferred_case_vectors (void);
-static bool sparc_legitimate_address_p (machine_mode, rtx, bool);
+static bool sparc_legitimate_address_p (machine_mode, rtx, bool,
+					code_helper = ERROR_MARK);
 static bool sparc_legitimate_constant_p (machine_mode, rtx);
 static rtx sparc_builtin_saveregs (void);
 static int epilogue_renumber (rtx *, int);
@@ -4529,7 +4530,8 @@ sparc_pic_register_p (rtx x)
    ordinarily.  This changes a bit when generating PIC.  */
 
 static bool
-sparc_legitimate_address_p (machine_mode mode, rtx addr, bool strict)
+sparc_legitimate_address_p (machine_mode mode, rtx addr, bool strict,
+			    code_helper)
 {
   rtx rs1 = NULL, rs2 = NULL, imm1 = NULL;
 
@@ -6904,7 +6906,7 @@ function_arg_slotno (const struct sparc_args *cum, machine_mode mode,
      their mode, depending upon whether VIS instructions are enabled.  */
   if (type && VECTOR_TYPE_P (type))
     {
-      if (TREE_CODE (TREE_TYPE (type)) == REAL_TYPE)
+      if (SCALAR_FLOAT_TYPE_P (TREE_TYPE (type)))
 	{
 	  /* The SPARC port defines no floating-point vector modes.  */
 	  gcc_assert (mode == BLKmode);
@@ -13662,18 +13664,16 @@ sparc_expand_conditional_move (machine_mode mode, rtx *operands)
 void
 sparc_expand_vcond (machine_mode mode, rtx *operands, int ccode, int fcode)
 {
+  enum rtx_code code = signed_condition (GET_CODE (operands[3]));
   rtx mask, cop0, cop1, fcmp, cmask, bshuf, gsr;
-  enum rtx_code code = GET_CODE (operands[3]);
 
   mask = gen_reg_rtx (Pmode);
   cop0 = operands[4];
   cop1 = operands[5];
   if (code == LT || code == GE)
     {
-      rtx t;
-
       code = swap_condition (code);
-      t = cop0; cop0 = cop1; cop1 = t;
+      std::swap (cop0, cop1);
     }
 
   gsr = gen_rtx_REG (DImode, SPARC_GSR_REG);

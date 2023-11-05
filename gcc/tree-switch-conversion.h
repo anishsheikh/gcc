@@ -303,7 +303,7 @@ public:
 /* A GIMPLE switch statement can be expanded to a short sequence of bit-wise
 comparisons.  "switch(x)" is converted into "if ((1 << (x-MINVAL)) & CST)"
 where CST and MINVAL are integer constants.  This is better than a series
-of compare-and-banch insns in some cases,  e.g. we can implement:
+of compare-and-branch insns in some cases,  e.g. we can implement:
 
 	if ((x==4) || (x==6) || (x==9) || (x==11))
 
@@ -914,7 +914,7 @@ switch_decision_tree::reset_out_edges_aux (gswitch *swtch)
 
 /* Release CLUSTERS vector and destruct all dynamically allocated items.  */
 
-static inline void
+inline void
 release_clusters (vec<cluster *> &clusters)
 {
   for (unsigned i = 0; i < clusters.length (); i++)

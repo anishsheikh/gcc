@@ -64,6 +64,9 @@ init_exception_processing (void)
   tmp = build_function_type_list (void_type_node, ptr_type_node, NULL_TREE);
   call_unexpected_fn
     = push_throw_library_fn (get_identifier ("__cxa_call_unexpected"), tmp);
+  call_terminate_fn
+    = push_library_fn (get_identifier ("__cxa_call_terminate"), tmp, NULL_TREE,
+		       ECF_NORETURN | ECF_COLD | ECF_NOTHROW);
 }
 
 /* Returns an expression to be executed if an unhandled exception is
@@ -76,7 +79,7 @@ cp_protect_cleanup_actions (void)
 
      When the destruction of an object during stack unwinding exits
      using an exception ... void terminate(); is called.  */
-  return terminate_fn;
+  return call_terminate_fn;
 }
 
 static tree
@@ -639,6 +642,8 @@ build_throw (location_t loc, tree exp)
       tree object, ptr;
       tree allocate_expr;
 
+      tsubst_flags_t complain = tf_warning_or_error;
+
       /* The CLEANUP_TYPE is the internal type of a destructor.  */
       if (!cleanup_type)
 	{
@@ -652,12 +657,13 @@ build_throw (location_t loc, tree exp)
 	  tree args[3] = {ptr_type_node, ptr_type_node, cleanup_type};
 
 	  throw_fn = declare_library_fn_1 ("__cxa_throw",
-					   ECF_NORETURN | ECF_COLD,
+					   ECF_NORETURN | ECF_XTHROW | ECF_COLD,
 					   void_type_node, 3, args);
 	  if (flag_tm && throw_fn != error_mark_node)
 	    {
 	      tree itm_fn = declare_library_fn_1 ("_ITM_cxa_throw",
-						  ECF_NORETURN | ECF_COLD,
+						  ECF_NORETURN | ECF_XTHROW
+						  | ECF_COLD,
 						  void_type_node, 3, args);
 	      if (itm_fn != error_mark_node)
 		{
@@ -759,11 +765,15 @@ build_throw (location_t loc, tree exp)
       cleanup = NULL_TREE;
       if (type_build_dtor_call (TREE_TYPE (object)))
 	{
-	  tree dtor_fn = lookup_fnfields (TYPE_BINFO (TREE_TYPE (object)),
+	  tree binfo = TYPE_BINFO (TREE_TYPE (object));
+	  tree dtor_fn = lookup_fnfields (binfo,
 					  complete_dtor_identifier, 0,
 					  tf_warning_or_error);
 	  dtor_fn = BASELINK_FUNCTIONS (dtor_fn);
-	  mark_used (dtor_fn);
+	  if (!mark_used (dtor_fn)
+	      || !perform_or_defer_access_check (binfo, dtor_fn,
+						 dtor_fn, complain))
+	    return error_mark_node;
 	  if (TYPE_HAS_NONTRIVIAL_DESTRUCTOR (TREE_TYPE (object)))
 	    {
 	      cxx_mark_addressable (dtor_fn);
@@ -788,7 +798,8 @@ build_throw (location_t loc, tree exp)
       if (!rethrow_fn)
 	{
 	  rethrow_fn = declare_library_fn_1 ("__cxa_rethrow",
-					     ECF_NORETURN | ECF_COLD,
+					     ECF_NORETURN | ECF_XTHROW
+					     | ECF_COLD,
 					     void_type_node, 0, NULL);
 	  if (flag_tm && rethrow_fn != error_mark_node)
 	    apply_tm_attr (rethrow_fn, get_identifier ("transaction_pure"));
@@ -1106,9 +1117,9 @@ maybe_noexcept_warning (tree fn)
 {
   if (TREE_NOTHROW (fn)
       && (!DECL_IN_SYSTEM_HEADER (fn)
-	  || global_dc->dc_warn_system_headers))
+	  || global_dc->m_warn_system_headers))
     {
-      auto s = make_temp_override (global_dc->dc_warn_system_headers, true);
+      auto s = make_temp_override (global_dc->m_warn_system_headers, true);
       auto_diagnostic_group d;
       if (warning (OPT_Wnoexcept, "noexcept-expression evaluates to %<false%> "
 		   "because of a call to %qD", fn))
@@ -1271,7 +1282,17 @@ build_noexcept_spec (tree expr, tsubst_flags_t complain)
 /* If the current function has a cleanup that might throw, and the return value
    has a non-trivial destructor, return a MODIFY_EXPR to set
    current_retval_sentinel so that we know that the return value needs to be
-   destroyed on throw.  Otherwise, returns NULL_TREE.  */
+   destroyed on throw.  Do the same if the current function might use the
+   named return value optimization, so we don't destroy it on return.
+   Otherwise, returns NULL_TREE.
+
+   The sentinel is set to indicate that we're in the process of returning, and
+   therefore should destroy a normal return value on throw, and shouldn't
+   destroy a named return value variable on normal scope exit.  It is set on
+   return, and cleared either by maybe_splice_retval_cleanup, or when an
+   exception reaches the NRV scope (finalize_nrv_r).  Note that once return
+   passes the NRV scope, it's effectively a normal return value, so cleanup
+   past that point is handled by maybe_splice_retval_cleanup. */
 
 tree
 maybe_set_retval_sentinel ()
@@ -1281,7 +1302,9 @@ maybe_set_retval_sentinel ()
   tree retval = DECL_RESULT (current_function_decl);
   if (!TYPE_HAS_NONTRIVIAL_DESTRUCTOR (TREE_TYPE (retval)))
     return NULL_TREE;
-  if (!cp_function_chain->throwing_cleanup)
+  if (!cp_function_chain->throwing_cleanup
+      && (current_function_return_value == error_mark_node
+	  || current_function_return_value == NULL_TREE))
     return NULL_TREE;
 
   if (!current_retval_sentinel)
@@ -1303,21 +1326,20 @@ maybe_set_retval_sentinel ()
    on throw.  */
 
 void
-maybe_splice_retval_cleanup (tree compound_stmt)
+maybe_splice_retval_cleanup (tree compound_stmt, bool is_try)
 {
-  /* If we need a cleanup for the return value, add it in at the same level as
-     pushdecl_outermost_localscope.  And also in try blocks.  */
-  const bool function_body
-    = (current_binding_level->level_chain
-       && current_binding_level->level_chain->kind == sk_function_parms
-      /* When we're processing a default argument, c_f_d may not have been
-	 set.  */
-       && current_function_decl);
+  if (!current_function_decl || !cfun
+      || DECL_CONSTRUCTOR_P (current_function_decl)
+      || DECL_DESTRUCTOR_P (current_function_decl)
+      || !current_retval_sentinel)
+    return;
 
-  if ((function_body || current_binding_level->kind == sk_try)
-      && !DECL_CONSTRUCTOR_P (current_function_decl)
-      && !DECL_DESTRUCTOR_P (current_function_decl)
-      && current_retval_sentinel)
+  /* if we need a cleanup for the return value, add it in at the same level as
+     pushdecl_outermost_localscope.  And also in try blocks.  */
+  cp_binding_level *b = current_binding_level;
+  const bool function_body = b->kind == sk_function_parms;
+
+  if (function_body || is_try)
     {
       location_t loc = DECL_SOURCE_LOCATION (current_function_decl);
       tree_stmt_iterator iter = tsi_start (compound_stmt);
@@ -1329,6 +1351,10 @@ maybe_splice_retval_cleanup (tree compound_stmt)
 	  tree decl_expr = build_stmt (loc, DECL_EXPR, current_retval_sentinel);
 	  tsi_link_before (&iter, decl_expr, TSI_SAME_STMT);
 	}
+
+      if (!cp_function_chain->throwing_cleanup)
+	/* We're only using the sentinel for an NRV.  */
+	return;
 
       /* Skip past other decls, they can't contain a return.  */
       while (TREE_CODE (tsi_stmt (iter)) == DECL_EXPR)
@@ -1343,6 +1369,14 @@ maybe_splice_retval_cleanup (tree compound_stmt)
 	  tsi_delink (&iter);
 	}
       tree dtor = build_cleanup (retval);
+      if (!function_body)
+	{
+	  /* Clear the sentinel so we don't try to destroy the retval again on
+	     rethrow (c++/112301).  */
+	  tree clear = build2 (MODIFY_EXPR, boolean_type_node,
+			       current_retval_sentinel, boolean_false_node);
+	  dtor = build2 (COMPOUND_EXPR, void_type_node, clear, dtor);
+	}
       tree cond = build3 (COND_EXPR, void_type_node, current_retval_sentinel,
 			  dtor, void_node);
       tree cleanup = build_stmt (loc, CLEANUP_STMT,

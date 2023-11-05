@@ -218,6 +218,7 @@ sem_item::target_supports_symbol_aliases_p (void)
 #if !defined (ASM_OUTPUT_DEF) || (!defined(ASM_OUTPUT_WEAK_ALIAS) && !defined (ASM_WEAKEN_DECL))
   return false;
 #else
+  gcc_checking_assert (TARGET_SUPPORTS_ALIASES);
   return true;
 #endif
 }
@@ -2204,7 +2205,7 @@ sem_item_optimizer::read_section (lto_file_decl_data *file_data,
   unsigned int count;
 
   lto_input_block ib_main ((const char *) data + main_offset, 0,
-			   header->main_size, file_data->mode_table);
+			   header->main_size, file_data);
 
   data_in
     = lto_data_in_create (file_data, (const char *) data + string_offset,

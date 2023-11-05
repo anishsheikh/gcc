@@ -32,7 +32,7 @@ EXPORT QUALIFIED String,
                  InitStringChar, Index, RIndex,
                  Mark, Length, ConCat, ConCatChar, Assign, Dup, Add,
                  Equal, EqualCharStar, EqualArray, ToUpper, ToLower,
-                 CopyOut, Mult, Slice,
+                 CopyOut, Mult, Slice, ReplaceChar,
                  RemoveWhitePrefix, RemoveWhitePostfix, RemoveComment,
                  char, string,
                  InitStringDB, InitStringCharStarDB, InitStringCharDB,
@@ -120,6 +120,14 @@ PROCEDURE ConCatChar (a: String; ch: CHAR) : String ;
 *)
 
 PROCEDURE Assign (a, b: String) : String ;
+
+
+(*
+   ReplaceChar - returns string s after it has changed all
+                 occurances of from to to.
+*)
+
+PROCEDURE ReplaceChar (s: String; from, to: CHAR) : String ;
 
 
 (*
@@ -361,9 +369,9 @@ PROCEDURE PopAllocation (halt: BOOLEAN) ;
 
 (*
    PopAllocationExemption - test to see that all strings are
-                            deallocated, except string, e, since
+                            deallocated, except string e since
                             the last push.
-                            Then it pops to the previous
+                            Post-condition: it pops to the previous
                             allocation/deallocation lists.
 
                             If halt is true then the application

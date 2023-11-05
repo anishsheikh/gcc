@@ -28,7 +28,7 @@ FROM decl IMPORT setLangC, setLangCP, setLangM2 ;
 
 FROM DynamicStrings IMPORT String, Length, InitString, Mark, Slice, EqualArray,
                            InitStringCharStar, ConCatChar, ConCat, KillString,
-                           Dup, string, char ;
+                           Dup, string, char, ReplaceChar ;
 
 IMPORT FIO ;
 IMPORT SFIO ;
@@ -46,6 +46,8 @@ VAR
    caseRuntime,
    arrayRuntime,
    returnRuntime,
+   suppressNoReturn,
+   useBoolType,
    gccConfigSystem,
    ignoreFQ,
    debugTopological,
@@ -53,6 +55,9 @@ VAR
    internalDebugging,
    verbose,
    quiet            : BOOLEAN ;
+   CReal,
+   CLongReal,
+   CShortReal,
    projectContents,
    summaryContents,
    contributedContents,
@@ -140,7 +145,8 @@ BEGIN
    printf0 ('  --automatic         generate a comment at the start of the file warning not to edit as it was automatically generated\n') ;
    printf0 ('  --scaffold-dynamic  generate dynamic module initialization code for C++\n') ;
    printf0 ('  --scaffold-main     generate main function which calls upon the dynamic initialization support in M2RTS\n') ;
-   printf0 ("  filename            the source file must be the last option\n") ;
+   printf0 ('  --suppress-noreturn suppress the emission of any attribute noreturn\n');
+   printf0 ('  filename            the source file must be the last option\n') ;
    exit (0)
 END displayHelp ;
 
@@ -440,6 +446,26 @@ END getExtendedOpaque ;
 
 
 (*
+   setSuppressNoReturn - set suppressNoReturn to value.
+*)
+
+PROCEDURE setSuppressNoReturn (value: BOOLEAN) ;
+BEGIN
+   suppressNoReturn := value
+END setSuppressNoReturn;
+
+
+(*
+   getSuppressNoReturn - return the suppressNoReturn value.
+*)
+
+PROCEDURE getSuppressNoReturn () : BOOLEAN ;
+BEGIN
+   RETURN suppressNoReturn
+END getSuppressNoReturn ;
+
+
+(*
    setSearchPath - set the search path for the module sources.
 *)
 
@@ -561,6 +587,93 @@ END getScaffoldMain ;
 
 
 (*
+   useBool - should mc use the bool type instead of int.
+*)
+
+PROCEDURE useBool () : BOOLEAN ;
+BEGIN
+   RETURN useBoolType
+END useBool ;
+
+
+(*
+   getCRealType - returns the string representing the REAL type
+                  used by C.  By default this is "double".
+*)
+
+PROCEDURE getCRealType () : String ;
+BEGIN
+   RETURN CReal
+END getCRealType ;
+
+
+(*
+   getCLongRealType - returns the string representing the REAL type
+                      used by C.  By default this is "long double".
+*)
+
+PROCEDURE getCLongRealType () : String ;
+BEGIN
+   RETURN CLongReal
+END getCLongRealType ;
+
+
+(*
+   getCShortRealType - returns the string representing the REAL type
+                       used by C.  By default this is "float".
+*)
+
+PROCEDURE getCShortRealType () : String ;
+BEGIN
+   RETURN CShortReal
+END getCShortRealType ;
+
+
+(*
+   toCType - returns a new string which has all occurences of '-'
+             replaced by ' '.
+*)
+
+PROCEDURE toCType (namedType: String) : String ;
+BEGIN
+   RETURN ReplaceChar (Dup (namedType), '-', ' ')
+END toCType ;
+
+
+(*
+   setCReal - assigns CReal to namedType after it has been transformed by
+              toCType.
+*)
+
+PROCEDURE setCReal (namedType: String) ;
+BEGIN
+   CReal := toCType (namedType)
+END setCReal ;
+
+
+(*
+   setCShortReal - assigns CShortReal to namedType after it has been
+                   transformed by toCType.
+*)
+
+PROCEDURE setCShortReal (namedType: String) ;
+BEGIN
+   CShortReal := toCType (namedType)
+END setCShortReal ;
+
+
+(*
+   setCLongReal - assigns CLongReal to namedType after it has been
+                  transformed by toCType.
+*)
+
+PROCEDURE setCLongReal (namedType: String) ;
+BEGIN
+   CLongReal := toCType (namedType)
+END setCLongReal ;
+
+
+(*
    optionIs - returns TRUE if the first len (right) characters
               match left.
 *)
@@ -675,6 +788,18 @@ BEGIN
    ELSIF optionIs ('--scaffold-dynamic', arg)
    THEN
       scaffoldDynamic := TRUE
+   ELSIF optionIs ('--suppress-noreturn', arg)
+   THEN
+      suppressNoReturn := TRUE
+   ELSIF optionIs ("--real=", arg)
+   THEN
+      setCReal (Slice (arg, 7, 0))
+   ELSIF optionIs ("--longreal=", arg)
+   THEN
+      setCLongReal (Slice (arg, 11, 0))
+   ELSIF optionIs ("--shortreal=", arg)
+   THEN
+      setCShortReal (Slice (arg, 12, 0))
    END
 END handleOption ;
 
@@ -733,11 +858,16 @@ BEGIN
    gccConfigSystem := FALSE ;
    scaffoldMain := FALSE ;
    scaffoldDynamic := FALSE ;
+   suppressNoReturn := FALSE ;
+   useBoolType := TRUE ;
    hPrefix := InitString ('') ;
    cppArgs := InitString ('') ;
    cppProgram := InitString ('') ;
    outputFile := InitString ('-') ;
    summaryContents := InitString ('') ;
    contributedContents := InitString ('') ;
-   projectContents := InitString ('GNU Modula-2')
+   projectContents := InitString ('GNU Modula-2') ;
+   CReal := InitString ('double') ;
+   CLongReal := InitString ('long double') ;
+   CShortReal := InitString ('float')
 END mcOptions.

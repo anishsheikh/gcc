@@ -61,6 +61,9 @@
 # define _GLIBCXX_ALWAYS_INLINE inline __attribute__((__always_inline__))
 #endif
 
+#define __glibcxx_want_constexpr_char_traits
+#include <bits/version.h>
+
 namespace __gnu_cxx _GLIBCXX_VISIBILITY(default)
 {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
@@ -263,6 +266,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     char_traits<_CharT>::
     copy(char_type* __s1, const char_type* __s2, std::size_t __n)
     {
+      if (__n == 0)
+	return __s1;
 #if __cplusplus >= 202002L
       if (std::__is_constant_evaluated())
 	{
@@ -271,7 +276,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	  return __s1;
 	}
 #endif
-
       __builtin_memcpy(__s1, __s2, __n * sizeof(char_type));
       return __s1;
     }
@@ -293,9 +297,12 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
       if _GLIBCXX17_CONSTEXPR (sizeof(_CharT) == 1 && __is_trivial(_CharT))
 	{
-	  unsigned char __c;
-	  __builtin_memcpy(&__c, __builtin_addressof(__a), 1);
-	  __builtin_memset(__s, __c, __n);
+	  if (__n)
+	    {
+	      unsigned char __c;
+	      __builtin_memcpy(&__c, __builtin_addressof(__a), 1);
+	      __builtin_memset(__s, __c, __n);
+	    }
 	}
       else
 	{
@@ -311,14 +318,6 @@ _GLIBCXX_END_NAMESPACE_VERSION
 namespace std _GLIBCXX_VISIBILITY(default)
 {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
-
-#ifdef __cpp_lib_is_constant_evaluated
-// Unofficial macro indicating P1032R1 support in C++20
-# define __cpp_lib_constexpr_char_traits 201811L
-#elif __cplusplus >= 201703L && _GLIBCXX_HAVE_IS_CONSTANT_EVALUATED
-// Unofficial macro indicating P0426R1 support in C++17
-# define __cpp_lib_constexpr_char_traits 201611L
-#endif
 
   // 21.1
   /**
@@ -758,10 +757,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       typedef char16_t          char_type;
 #ifdef __UINT_LEAST16_TYPE__
       typedef __UINT_LEAST16_TYPE__	    int_type;
-#elif defined _GLIBCXX_USE_C99_STDINT_TR1
-      typedef uint_least16_t    int_type;
 #else
-      typedef make_unsigned<char16_t>::type int_type;
+      typedef uint_least16_t    int_type;
 #endif
 #if _GLIBCXX_HOSTED
       typedef streamoff         off_type;
@@ -887,10 +884,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       typedef char32_t          char_type;
 #ifdef __UINT_LEAST32_TYPE__
       typedef __UINT_LEAST32_TYPE__	    int_type;
-#elif defined _GLIBCXX_USE_C99_STDINT_TR1
-      typedef uint_least32_t    int_type;
 #else
-      typedef make_unsigned<char32_t>::type int_type;
+      typedef uint_least32_t    int_type;
 #endif
 #if _GLIBCXX_HOSTED
       typedef streamoff         off_type;

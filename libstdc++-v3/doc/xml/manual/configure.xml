@@ -74,9 +74,14 @@
  </listitem></varlistentry>
 
  <varlistentry><term><code>--enable-cstdio=OPTION</code></term>
- <listitem><para>Select a target-specific I/O package. At the moment, the only
-	choice is to use 'stdio', a generic "C" abstraction.
-	The default is 'stdio'. This option can change the library ABI.
+ <listitem><para>Select a target-specific I/O package. The choices are 'stdio'
+       which is a generic abstraction using POSIX file I/O APIs
+       (<function>read</function>, <function>write</function>,
+       <function>lseek</function>, etc.), and 'stdio_pure' which is similar
+       but only uses standard C file I/O APIs (<function>fread</function>,
+       <function>fwrite</function>, <function>fseek</function>, etc.).
+       The 'stdio_posix' choice is a synonym for 'stdio'.
+       The default is 'stdio'. This option can change the library ABI.
      </para>
  </listitem></varlistentry>
 
@@ -336,8 +341,8 @@
 	C++ includes. If enabled (as by default), and the compiler
 	seems capable of passing the simple sanity checks thrown at
 	it, try to build stdc++.h.gch as part of the make process.
-	In addition, this generated file is used later on (by appending <code>
-	--include bits/stdc++.h </code> to CXXFLAGS) when running the
+	In addition, this generated file is used later on (by appending
+	<code>-include bits/stdc++.h</code> to CXXFLAGS) when running the
 	testsuite.
      </para>
  </listitem></varlistentry>
@@ -362,7 +367,10 @@
      built.  The C++ Standard also describes a
      <emphasis>freestanding</emphasis> environment, in which only a
      minimal set of headers are provided.  This option builds such an
-     environment.
+     environment.  Note that a hosted library installs headers that still can
+     be used in non hosted environments, as the library checks for
+     <code>__STDC_HOSTED__</code>, however, a library configured with
+     <code>--disable-hosted-libstdcxx</code> will not install unusable headers.
      </para>
  </listitem></varlistentry>
 

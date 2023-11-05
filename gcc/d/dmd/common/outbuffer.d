@@ -1,7 +1,7 @@
 /**
  * An expandable buffer in which you can write text or binary data.
  *
- * Copyright: Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright: Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:   Walter Bright, https://www.digitalmars.com
  * License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:    $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/root/outbuffer.d, root/_outbuffer.d)
@@ -61,7 +61,7 @@ struct OutBuffer
     /**
     Construct given size.
     */
-    this(size_t initialSize) nothrow
+    this(size_t initialSize) nothrow @safe
     {
         reserve(initialSize);
     }
@@ -338,9 +338,12 @@ struct OutBuffer
         offset += len;
     }
 
-    /// write newline
+    /// strip trailing tabs or spaces, write newline
     extern (C++) void writenl() pure nothrow @safe
     {
+        while (offset > 0 && (data[offset - 1] == ' ' || data[offset - 1] == '\t'))
+            offset--;
+
         version (Windows)
         {
             writeword(0x0A0D); // newline is CR,LF on Microsoft OS's
@@ -524,7 +527,7 @@ struct OutBuffer
      * Returns:
      *  slice of the allocated space to be filled in
      */
-    extern (D) char[] allocate(size_t nbytes) pure nothrow
+    extern (D) char[] allocate(size_t nbytes) pure nothrow @safe
     {
         reserve(nbytes);
         offset += nbytes;
@@ -708,8 +711,14 @@ struct OutBuffer
         return cast(char*)data.ptr;
     }
 
+    // Peek at slice of data without taking ownership
+    extern (D) ubyte[] peekSlice() pure nothrow
+    {
+        return data[0 .. offset];
+    }
+
     // Append terminating null if necessary and take ownership of data
-    extern (C++) char* extractChars() pure nothrow
+    extern (C++) char* extractChars() pure nothrow @safe
     {
         if (!offset || data[offset - 1] != '\0')
             writeByte(0);
@@ -918,4 +927,19 @@ unittest
 
     buf.setsize(4);
     assert(buf.length == 4);
+}
+
+unittest
+{
+    OutBuffer buf;
+
+    buf.writenl();
+    buf.writestring("abc \t ");
+    buf.writenl(); // strips trailing whitespace
+    buf.writenl(); // doesn't strip previous newline
+
+    version(Windows)
+        assert(buf[] == "\r\nabc\r\n\r\n");
+    else
+        assert(buf[] == "\nabc\n\n");
 }

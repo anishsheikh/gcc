@@ -272,7 +272,7 @@ c_tree_printer (pretty_printer *pp, text_info *text, const char *spec,
 
   if (*spec != 'v')
     {
-      t = va_arg (*text->args_ptr, tree);
+      t = va_arg (*text->m_args_ptr, tree);
       if (set_locus)
 	text->set_location (0, DECL_SOURCE_LOCATION (t),
 			    SHOW_RANGE_WITH_CARET);
@@ -316,7 +316,7 @@ c_tree_printer (pretty_printer *pp, text_info *text, const char *spec,
       return true;
 
     case 'v':
-      pp_c_cv_qualifiers (cpp, va_arg (*text->args_ptr, int), hash);
+      pp_c_cv_qualifiers (cpp, va_arg (*text->m_args_ptr, int), hash);
       return true;
 
     default:
@@ -371,12 +371,12 @@ c_types_compatible_p (tree x, tree y)
   return comptypes (TYPE_MAIN_VARIANT (x), TYPE_MAIN_VARIANT (y));
 }
 
-/* Determine if the type is a vla type for the backend.  */
+/* Determine if the type is a variably modified type for the backend.  */
 
 bool
-c_vla_unspec_p (tree x, tree fn ATTRIBUTE_UNUSED)
+c_var_mod_p (tree x, tree fn ATTRIBUTE_UNUSED)
 {
-  return c_vla_type_p (x);
+  return C_TYPE_VARIABLY_MODIFIED (x);
 }
 
 /* Special routine to get the alias set of T for C.  */
@@ -399,4 +399,12 @@ int
 maybe_adjust_arg_pos_for_attribute (const_tree)
 {
   return 0;
+}
+
+/* In C, no expression is dependent.  */
+
+bool
+instantiation_dependent_expression_p (tree)
+{
+  return false;
 }

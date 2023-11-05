@@ -1109,7 +1109,8 @@ struct processor_costs ppca2_cost = {
 static tree (*rs6000_veclib_handler) (combined_fn, tree, tree);
 
 
-static bool rs6000_debug_legitimate_address_p (machine_mode, rtx, bool);
+static bool rs6000_debug_legitimate_address_p (machine_mode, rtx, bool,
+					       code_helper = ERROR_MARK);
 static tree rs6000_handle_longcall_attribute (tree *, tree, tree, int, bool *);
 static tree rs6000_handle_altivec_attribute (tree *, tree, tree, int, bool *);
 static tree rs6000_handle_struct_attribute (tree *, tree, tree, int, bool *);
@@ -1760,6 +1761,10 @@ static const struct attribute_spec rs6000_attribute_table[] =
 
 #undef TARGET_UPDATE_IPA_FN_TARGET_INFO
 #define TARGET_UPDATE_IPA_FN_TARGET_INFO rs6000_update_ipa_fn_target_info
+
+#undef TARGET_CONST_ANCHOR
+#define TARGET_CONST_ANCHOR 0x8000
+
 
 
 /* Processor table.  */
@@ -1899,7 +1904,7 @@ rs6000_hard_regno_mode_ok_uncached (int regno, machine_mode mode)
 	  if(GET_MODE_SIZE (mode) == UNITS_PER_FP_WORD)
 	    return 1;
 
-	  if (TARGET_P8_VECTOR && (mode == SImode))
+	  if (TARGET_POPCNTD && mode == SImode)
 	    return 1;
 
 	  if (TARGET_P9_VECTOR && (mode == QImode || mode == HImode))
@@ -3662,14 +3667,17 @@ rs6000_option_override_internal (bool global_init_p)
 
   /* Without option powerpc64 specified explicitly, we need to ensure
      powerpc64 always enabled for 64 bit here, otherwise some following
-     checks can use unexpected TARGET_POWERPC64 value.  Meanwhile, we
-     need to ensure set_masks doesn't have OPTION_MASK_POWERPC64 on,
-     otherwise later processing can clear it.  */
+     checks can use unexpected TARGET_POWERPC64 value.  */
   if (!(rs6000_isa_flags_explicit & OPTION_MASK_POWERPC64)
       && TARGET_64BIT)
     {
       rs6000_isa_flags |= OPTION_MASK_POWERPC64;
-      set_masks &= ~OPTION_MASK_POWERPC64;
+      /* Need to stop powerpc64 from being unset in later processing,
+	 so clear it in set_masks.  But as PR108240 shows, to keep it
+	 consistent with before, we want to make this only if 64 bit
+	 is enabled explicitly.  This is a hack, revisit this later.  */
+      if (rs6000_isa_flags_explicit & OPTION_MASK_64BIT)
+	set_masks &= ~OPTION_MASK_POWERPC64;
     }
 
   /* Process the -mcpu=<xxx> and -mtune=<xxx> argument.  If the user changed
@@ -6635,6 +6643,36 @@ xxspltib_constant_p (rtx op,
   return true;
 }
 
+/* Return true if OP mode is V2DI and can be synthesized with ISA 2.07
+   instructions vupkhsw and vspltisw.
+
+   Return the constant that is being split via CONSTANT_PTR.  */
+
+bool
+vspltisw_vupkhsw_constant_p (rtx op, machine_mode mode, int *constant_ptr)
+{
+  HOST_WIDE_INT value;
+  rtx elt;
+
+  if (!TARGET_P8_VECTOR)
+    return false;
+
+  if (mode != V2DImode)
+    return false;
+
+  if (!const_vec_duplicate_p (op, &elt))
+    return false;
+
+  value = INTVAL (elt);
+  if (value == 0 || value == 1
+      || !EASY_VECTOR_15 (value))
+    return false;
+
+  if (constant_ptr)
+    *constant_ptr = (int) value;
+  return true;
+}
+
 const char *
 output_vec_const_move (rtx *operands)
 {
@@ -7234,23 +7272,29 @@ rs6000_expand_vector_set_var_p9 (rtx target, rtx val, rtx idx)
   machine_mode idx_mode = GET_MODE (idx);
 
   machine_mode shift_mode;
-  rtx (*gen_ashl)(rtx, rtx, rtx);
-  rtx (*gen_lvsl)(rtx, rtx);
-  rtx (*gen_lvsr)(rtx, rtx);
+  /* Gen function pointers for shifting left and generation of permutation
+     control vectors.  */
+  rtx (*gen_ashl) (rtx, rtx, rtx);
+  rtx (*gen_pcvr1) (rtx, rtx);
+  rtx (*gen_pcvr2) (rtx, rtx);
 
   if (TARGET_POWERPC64)
     {
       shift_mode = DImode;
       gen_ashl = gen_ashldi3;
-      gen_lvsl = gen_altivec_lvsl_reg_di;
-      gen_lvsr = gen_altivec_lvsr_reg_di;
+      gen_pcvr1 = BYTES_BIG_ENDIAN ? gen_altivec_lvsl_reg_di
+				   : gen_altivec_lvsr_reg_di;
+      gen_pcvr2 = BYTES_BIG_ENDIAN ? gen_altivec_lvsr_reg_di
+				   : gen_altivec_lvsl_reg_di;
     }
   else
     {
       shift_mode = SImode;
       gen_ashl = gen_ashlsi3;
-      gen_lvsl = gen_altivec_lvsl_reg_si;
-      gen_lvsr = gen_altivec_lvsr_reg_si;
+      gen_pcvr1 = BYTES_BIG_ENDIAN ? gen_altivec_lvsl_reg_si
+				   : gen_altivec_lvsr_reg_si;
+      gen_pcvr2 = BYTES_BIG_ENDIAN ? gen_altivec_lvsr_reg_si
+				   : gen_altivec_lvsl_reg_si;
     }
   /* Generate the IDX for permute shift, width is the vector element size.
      idx = idx * width.  */
@@ -7259,25 +7303,29 @@ rs6000_expand_vector_set_var_p9 (rtx target, rtx val, rtx idx)
 
   emit_insn (gen_ashl (tmp, idx, GEN_INT (shift)));
 
-  /*  lvsr    v1,0,idx.  */
-  rtx pcvr = gen_reg_rtx (V16QImode);
-  emit_insn (gen_lvsr (pcvr, tmp));
-
-  /*  lvsl    v2,0,idx.  */
-  rtx pcvl = gen_reg_rtx (V16QImode);
-  emit_insn (gen_lvsl (pcvl, tmp));
+  /* Generate one permutation control vector used for rotating the element
+     at to-insert position to element zero in target vector.  lvsl is
+     used for big endianness while lvsr is used for little endianness:
+     lvs[lr]    v1,0,idx.  */
+  rtx pcvr1 = gen_reg_rtx (V16QImode);
+  emit_insn (gen_pcvr1 (pcvr1, tmp));
 
   rtx sub_target = simplify_gen_subreg (V16QImode, target, mode, 0);
+  rtx perm1 = gen_altivec_vperm_v8hiv16qi (sub_target, sub_target, sub_target,
+					   pcvr1);
+  emit_insn (perm1);
 
-  rtx permr
-    = gen_altivec_vperm_v8hiv16qi (sub_target, sub_target, sub_target, pcvr);
-  emit_insn (permr);
-
+  /* Insert val into element 0 of target vector.  */
   rs6000_expand_vector_set (target, val, const0_rtx);
 
-  rtx perml
-    = gen_altivec_vperm_v8hiv16qi (sub_target, sub_target, sub_target, pcvl);
-  emit_insn (perml);
+  /* Rotate back with a reversed permutation control vector generated from:
+     lvs[rl]   v2,0,idx.  */
+  rtx pcvr2 = gen_reg_rtx (V16QImode);
+  emit_insn (gen_pcvr2 (pcvr2, tmp));
+
+  rtx perm2 = gen_altivec_vperm_v8hiv16qi (sub_target, sub_target, sub_target,
+					   pcvr2);
+  emit_insn (perm2);
 }
 
 /* Insert VAL into IDX of TARGET, VAL size is same of the vector element, IDX
@@ -7647,12 +7695,11 @@ rs6000_expand_vector_extract (rtx target, rtx vec, rtx elt)
     {
       unsigned int ele_size = GET_MODE_SIZE (inner_mode);
       rtx num_ele_m1 = GEN_INT (GET_MODE_NUNITS (mode) - 1);
-      rtx new_addr = gen_reg_rtx (Pmode);
 
       elt = gen_rtx_AND (Pmode, elt, num_ele_m1);
       if (ele_size > 1)
 	elt = gen_rtx_MULT (Pmode, elt, GEN_INT (ele_size));
-      new_addr = gen_rtx_PLUS (Pmode, XEXP (mem, 0), elt);
+      rtx new_addr = gen_rtx_PLUS (Pmode, XEXP (mem, 0), elt);
       new_addr = change_address (mem, inner_mode, new_addr);
       emit_move_insn (target, new_addr);
     }
@@ -8046,7 +8093,7 @@ rs6000_data_alignment (tree type, unsigned int align, enum data_align how)
 {
   if (how != align_opt)
     {
-      if (TREE_CODE (type) == VECTOR_TYPE && align < 128)
+      if (VECTOR_TYPE_P (type) && align < 128)
 	align = 128;
     }
 
@@ -8196,7 +8243,8 @@ darwin_rs6000_special_round_type_align (tree type, unsigned int computed,
       type = TREE_TYPE (type);
   } while (AGGREGATE_TYPE_P (type));
 
-  if (! AGGREGATE_TYPE_P (type) && type != error_mark_node)
+  if (type != error_mark_node && ! AGGREGATE_TYPE_P (type)
+      && ! TYPE_PACKED (type) && maximum_field_alignment == 0)
     align = MAX (align, TYPE_ALIGN (type));
 
   return align;
@@ -9836,12 +9884,19 @@ use_toc_relative_ref (rtx sym, machine_mode mode)
    because adjacent memory cells are accessed by adding word-sized offsets
    during assembly output.  */
 static bool
-rs6000_legitimate_address_p (machine_mode mode, rtx x, bool reg_ok_strict)
+rs6000_legitimate_address_p (machine_mode mode, rtx x, bool reg_ok_strict,
+			     code_helper ch = ERROR_MARK)
 {
   bool reg_offset_p = reg_offset_addressing_ok_p (mode);
   bool quad_offset_p = mode_supports_dq_form (mode);
 
   if (TARGET_ELF && RS6000_SYMBOL_REF_TLS_P (x))
+    return 0;
+
+  /* lxvl and stxvl doesn't support any addressing modes with PLUS.  */
+  if (ch.is_internal_fn ()
+      && (ch == IFN_LEN_LOAD || ch == IFN_LEN_STORE)
+      && GET_CODE (x) == PLUS)
     return 0;
 
   /* Handle unaligned altivec lvx/stvx type addresses.  */
@@ -9939,10 +9994,10 @@ rs6000_legitimate_address_p (machine_mode mode, rtx x, bool reg_ok_strict)
 
 /* Debug version of rs6000_legitimate_address_p.  */
 static bool
-rs6000_debug_legitimate_address_p (machine_mode mode, rtx x,
-				   bool reg_ok_strict)
+rs6000_debug_legitimate_address_p (machine_mode mode, rtx x, bool reg_ok_strict,
+				   code_helper ch)
 {
-  bool ret = rs6000_legitimate_address_p (mode, x, reg_ok_strict);
+  bool ret = rs6000_legitimate_address_p (mode, x, reg_ok_strict, ch);
   fprintf (stderr,
 	   "\nrs6000_legitimate_address_p: return = %s, mode = %s, "
 	   "strict = %d, reload = %s, code = %s\n",
@@ -10244,6 +10299,199 @@ rs6000_emit_set_const (rtx dest, rtx source)
   return true;
 }
 
+/* Check if C can be rotated to a negative value which 'lis' instruction is
+   able to load: 1..1xx0..0.  If so, set *ROT to the number by which C is
+   rotated, and return true.  Return false otherwise.  */
+
+static bool
+can_be_rotated_to_negative_lis (HOST_WIDE_INT c, int *rot)
+{
+  /* case a. 1..1xxx0..01..1: up to 15 x's, at least 16 0's.  */
+  int leading_ones = clz_hwi (~c);
+  int tailing_ones = ctz_hwi (~c);
+  int middle_zeros = ctz_hwi (c >> tailing_ones);
+  if (middle_zeros >= 16 && leading_ones + tailing_ones >= 33)
+    {
+      *rot = HOST_BITS_PER_WIDE_INT - tailing_ones;
+      return true;
+    }
+
+  /* case b. xx0..01..1xx: some of 15 x's (and some of 16 0's) are
+     rotated over the highest bit.  */
+  int pos_one = clz_hwi ((c << 16) >> 16);
+  middle_zeros = ctz_hwi (c >> (HOST_BITS_PER_WIDE_INT - pos_one));
+  int middle_ones = clz_hwi (~(c << pos_one));
+  if (middle_zeros >= 16 && middle_ones >= 33)
+    {
+      *rot = pos_one;
+      return true;
+    }
+
+  return false;
+}
+
+/* Check if value C can be built by 2 instructions: one is 'li or lis',
+   another is rotldi.
+
+   If so, *SHIFT is set to the shift operand of rotldi(rldicl), and *MASK
+   is set to the mask operand of rotldi(rldicl), and return true.
+   Return false otherwise.  */
+
+static bool
+can_be_built_by_li_lis_and_rotldi (HOST_WIDE_INT c, int *shift,
+				   HOST_WIDE_INT *mask)
+{
+  /* If C or ~C contains at least 49 successive zeros, then C can be rotated
+     to/from a positive or negative value that 'li' is able to load.  */
+  int n;
+  if (can_be_rotated_to_lowbits (c, 15, &n)
+      || can_be_rotated_to_lowbits (~c, 15, &n)
+      || can_be_rotated_to_negative_lis (c, &n))
+    {
+      *mask = HOST_WIDE_INT_M1;
+      *shift = HOST_BITS_PER_WIDE_INT - n;
+      return true;
+    }
+
+  return false;
+}
+
+/* Check if value C can be built by 2 instructions: one is 'li or lis',
+   another is rldicl.
+
+   If so, *SHIFT is set to the shift operand of rldicl, and *MASK is set to
+   the mask operand of rldicl, and return true.
+   Return false otherwise.  */
+
+static bool
+can_be_built_by_li_lis_and_rldicl (HOST_WIDE_INT c, int *shift,
+				   HOST_WIDE_INT *mask)
+{
+  /* Leading zeros may be cleaned by rldicl with a mask.  Change leading zeros
+     to ones and then recheck it.  */
+  int lz = clz_hwi (c);
+
+  /* If lz == 0, the left shift is undefined.  */
+  if (!lz)
+    return false;
+
+  HOST_WIDE_INT unmask_c
+    = c | (HOST_WIDE_INT_M1U << (HOST_BITS_PER_WIDE_INT - lz));
+  int n;
+  if (can_be_rotated_to_lowbits (~unmask_c, 15, &n)
+      || can_be_rotated_to_negative_lis (unmask_c, &n))
+    {
+      *mask = HOST_WIDE_INT_M1U >> lz;
+      *shift = n == 0 ? 0 : HOST_BITS_PER_WIDE_INT - n;
+      return true;
+    }
+
+  return false;
+}
+
+/* Check if value C can be built by 2 instructions: one is 'li or lis',
+   another is rldicr.
+
+   If so, *SHIFT is set to the shift operand of rldicr, and *MASK is set to
+   the mask operand of rldicr, and return true.
+   Return false otherwise.  */
+
+static bool
+can_be_built_by_li_lis_and_rldicr (HOST_WIDE_INT c, int *shift,
+				   HOST_WIDE_INT *mask)
+{
+  /* Tailing zeros may be cleaned by rldicr with a mask.  Change tailing zeros
+     to ones and then recheck it.  */
+  int tz = ctz_hwi (c);
+
+  /* If tz == HOST_BITS_PER_WIDE_INT, the left shift is undefined.  */
+  if (tz >= HOST_BITS_PER_WIDE_INT)
+    return false;
+
+  HOST_WIDE_INT unmask_c = c | ((HOST_WIDE_INT_1U << tz) - 1);
+  int n;
+  if (can_be_rotated_to_lowbits (~unmask_c, 15, &n)
+      || can_be_rotated_to_negative_lis (unmask_c, &n))
+    {
+      *mask = HOST_WIDE_INT_M1U << tz;
+      *shift = HOST_BITS_PER_WIDE_INT - n;
+      return true;
+    }
+
+  return false;
+}
+
+/* Check if value C can be built by 2 instructions: one is 'li', another is
+   rldic.
+
+   If so, *SHIFT is set to the 'shift' operand of rldic; and *MASK is set
+   to the mask value about the 'mb' operand of rldic; and return true.
+   Return false otherwise.  */
+
+static bool
+can_be_built_by_li_and_rldic (HOST_WIDE_INT c, int *shift, HOST_WIDE_INT *mask)
+{
+  /* There are 49 successive ones in the negative value of 'li'.  */
+  int ones = 49;
+
+  /* 1..1xx1..1: negative value of li --> 0..01..1xx0..0:
+     right bits are shifted as 0's, and left 1's(and x's) are cleaned.  */
+  int tz = ctz_hwi (c);
+  int lz = clz_hwi (c);
+
+  /* If lz == HOST_BITS_PER_WIDE_INT, the left shift is undefined.  */
+  if (lz >= HOST_BITS_PER_WIDE_INT)
+    return false;
+
+  int middle_ones = clz_hwi (~(c << lz));
+  if (tz + lz + middle_ones >= ones
+      && (tz - lz) < HOST_BITS_PER_WIDE_INT
+      && tz < HOST_BITS_PER_WIDE_INT)
+    {
+      *mask = ((1LL << (HOST_BITS_PER_WIDE_INT - tz - lz)) - 1LL) << tz;
+      *shift = tz;
+      return true;
+    }
+
+  /* 1..1xx1..1 --> 1..1xx0..01..1: some 1's(following x's) are cleaned. */
+  int leading_ones = clz_hwi (~c);
+  int tailing_ones = ctz_hwi (~c);
+  int middle_zeros = ctz_hwi (c >> tailing_ones);
+  if (leading_ones + tailing_ones + middle_zeros >= ones
+      && middle_zeros < HOST_BITS_PER_WIDE_INT)
+    {
+      *mask = ~(((1ULL << middle_zeros) - 1ULL) << tailing_ones);
+      *shift = tailing_ones + middle_zeros;
+      return true;
+    }
+
+  /* xx1..1xx: --> xx0..01..1xx: some 1's(following x's) are cleaned. */
+  /* Get the position for the first bit of successive 1.
+     The 24th bit would be in successive 0 or 1.  */
+  HOST_WIDE_INT low_mask = (HOST_WIDE_INT_1U << 24) - HOST_WIDE_INT_1U;
+  int pos_first_1 = ((c & (low_mask + 1)) == 0)
+		      ? clz_hwi (c & low_mask)
+		      : HOST_BITS_PER_WIDE_INT - ctz_hwi (~(c | low_mask));
+
+  /* Make sure the left and right shifts are defined.  */
+  if (!IN_RANGE (pos_first_1, 1, HOST_BITS_PER_WIDE_INT-1))
+    return false;
+
+  middle_ones = clz_hwi (~c << pos_first_1);
+  middle_zeros = ctz_hwi (c >> (HOST_BITS_PER_WIDE_INT - pos_first_1));
+  if (pos_first_1 < HOST_BITS_PER_WIDE_INT
+      && middle_ones + middle_zeros < HOST_BITS_PER_WIDE_INT
+      && middle_ones + middle_zeros >= ones)
+    {
+      *mask = ~(((1ULL << middle_zeros) - 1LL)
+		<< (HOST_BITS_PER_WIDE_INT - pos_first_1));
+      *shift = HOST_BITS_PER_WIDE_INT - pos_first_1 + middle_zeros;
+      return true;
+    }
+
+  return false;
+}
+
 /* Subroutine of rs6000_emit_set_const, handling PowerPC64 DImode.
    Output insns to set DEST equal to the constant C as a series of
    lis, ori and shl instructions.  */
@@ -10252,15 +10500,14 @@ static void
 rs6000_emit_set_long_const (rtx dest, HOST_WIDE_INT c)
 {
   rtx temp;
+  int shift;
+  HOST_WIDE_INT mask;
   HOST_WIDE_INT ud1, ud2, ud3, ud4;
 
   ud1 = c & 0xffff;
-  c = c >> 16;
-  ud2 = c & 0xffff;
-  c = c >> 16;
-  ud3 = c & 0xffff;
-  c = c >> 16;
-  ud4 = c & 0xffff;
+  ud2 = (c >> 16) & 0xffff;
+  ud3 = (c >> 32) & 0xffff;
+  ud4 = (c >> 48) & 0xffff;
 
   if ((ud4 == 0xffff && ud3 == 0xffff && ud2 == 0xffff && (ud1 & 0x8000))
       || (ud4 == 0 && ud3 == 0 && ud2 == 0 && ! (ud1 & 0x8000)))
@@ -10276,6 +10523,13 @@ rs6000_emit_set_long_const (rtx dest, HOST_WIDE_INT c)
       if (ud1 != 0)
 	emit_move_insn (dest, gen_rtx_IOR (DImode, temp, GEN_INT (ud1)));
     }
+  else if (ud4 == 0xffff && ud3 == 0xffff && !(ud2 & 0x8000) && ud1 == 0)
+    {
+      /* lis; xoris */
+      temp = !can_create_pseudo_p () ? dest : gen_reg_rtx (DImode);
+      emit_move_insn (temp, GEN_INT (sext_hwi ((ud2 | 0x8000) << 16, 32)));
+      emit_move_insn (dest, gen_rtx_XOR (DImode, temp, GEN_INT (0x80000000)));
+    }
   else if (ud4 == 0xffff && ud3 == 0xffff && (ud1 & 0x8000))
     {
       /* li; xoris */
@@ -10283,6 +10537,22 @@ rs6000_emit_set_long_const (rtx dest, HOST_WIDE_INT c)
       emit_move_insn (temp, GEN_INT (sext_hwi (ud1, 16)));
       emit_move_insn (dest, gen_rtx_XOR (DImode, temp,
 					 GEN_INT ((ud2 ^ 0xffff) << 16)));
+    }
+  else if (can_be_built_by_li_lis_and_rotldi (c, &shift, &mask)
+	   || can_be_built_by_li_lis_and_rldicl (c, &shift, &mask)
+	   || can_be_built_by_li_lis_and_rldicr (c, &shift, &mask)
+	   || can_be_built_by_li_and_rldic (c, &shift, &mask))
+    {
+      temp = !can_create_pseudo_p () ? dest : gen_reg_rtx (DImode);
+      unsigned HOST_WIDE_INT imm = (c | ~mask);
+      imm = (imm >> shift) | (imm << (HOST_BITS_PER_WIDE_INT - shift));
+
+      emit_move_insn (temp, GEN_INT (imm));
+      if (shift != 0)
+	temp = gen_rtx_ROTATE (DImode, temp, GEN_INT (shift));
+      if (mask != HOST_WIDE_INT_M1)
+	temp = gen_rtx_AND (DImode, temp, GEN_INT (mask));
+      emit_move_insn (dest, temp);
     }
   else if (ud3 == 0 && ud4 == 0)
     {
@@ -10372,19 +10642,34 @@ rs6000_emit_set_long_const (rtx dest, HOST_WIDE_INT c)
     }
   else
     {
-      temp = !can_create_pseudo_p () ? dest : gen_reg_rtx (DImode);
+      if (can_create_pseudo_p ())
+	{
+	  /* lis HIGH,UD4 ; ori HIGH,UD3 ;
+	     lis LOW,UD2 ; ori LOW,UD1 ; rldimi LOW,HIGH,32,0.  */
+	  rtx high = gen_reg_rtx (DImode);
+	  rtx low = gen_reg_rtx (DImode);
+	  HOST_WIDE_INT num = (ud2 << 16) | ud1;
+	  rs6000_emit_set_long_const (low, sext_hwi (num, 32));
+	  num = (ud4 << 16) | ud3;
+	  rs6000_emit_set_long_const (high, sext_hwi (num, 32));
+	  emit_insn (gen_rotldi3_insert_3 (dest, high, GEN_INT (32), low,
+					   GEN_INT (0xffffffff)));
+	}
+      else
+	{
+	  /* lis DEST,UD4 ; ori DEST,UD3 ; rotl DEST,32 ;
+	     oris DEST,UD2 ; ori DEST,UD1.  */
+	  emit_move_insn (dest, GEN_INT (sext_hwi (ud4 << 16, 32)));
+	  if (ud3 != 0)
+	    emit_move_insn (dest, gen_rtx_IOR (DImode, dest, GEN_INT (ud3)));
 
-      emit_move_insn (temp, GEN_INT (sext_hwi (ud4 << 16, 32)));
-      if (ud3 != 0)
-	emit_move_insn (temp, gen_rtx_IOR (DImode, temp, GEN_INT (ud3)));
-
-      emit_move_insn (ud2 != 0 || ud1 != 0 ? temp : dest,
-		      gen_rtx_ASHIFT (DImode, temp, GEN_INT (32)));
-      if (ud2 != 0)
-	emit_move_insn (ud1 != 0 ? temp : dest,
-			gen_rtx_IOR (DImode, temp, GEN_INT (ud2 << 16)));
-      if (ud1 != 0)
-	emit_move_insn (dest, gen_rtx_IOR (DImode, temp, GEN_INT (ud1)));
+	  emit_move_insn (dest, gen_rtx_ASHIFT (DImode, dest, GEN_INT (32)));
+	  if (ud2 != 0)
+	    emit_move_insn (dest,
+			    gen_rtx_IOR (DImode, dest, GEN_INT (ud2 << 16)));
+	  if (ud1 != 0)
+	    emit_move_insn (dest, gen_rtx_IOR (DImode, dest, GEN_INT (ud1)));
+	}
     }
 }
 
@@ -11151,26 +11436,6 @@ init_float128_ibm (machine_mode mode)
     }
 }
 
-/* Create a decl for either complex long double multiply or complex long double
-   divide when long double is IEEE 128-bit floating point.  We can't use
-   __multc3 and __divtc3 because the original long double using IBM extended
-   double used those names.  The complex multiply/divide functions are encoded
-   as builtin functions with a complex result and 4 scalar inputs.  */
-
-static void
-create_complex_muldiv (const char *name, built_in_function fncode, tree fntype)
-{
-  tree fndecl = add_builtin_function (name, fntype, fncode, BUILT_IN_NORMAL,
-				      name, NULL_TREE);
-
-  set_builtin_decl (fncode, fndecl, true);
-
-  if (TARGET_DEBUG_BUILTIN)
-    fprintf (stderr, "create complex %s, fncode: %d\n", name, (int) fncode);
-
-  return;
-}
-
 /* Set up IEEE 128-bit floating point routines.  Use different names if the
    arguments can be passed in a vector register.  The historical PowerPC
    implementation of IEEE 128-bit floating point used _q_<op> for the names, so
@@ -11182,32 +11447,6 @@ init_float128_ieee (machine_mode mode)
 {
   if (FLOAT128_VECTOR_P (mode))
     {
-      static bool complex_muldiv_init_p = false;
-
-      /* Set up to call __mulkc3 and __divkc3 under -mabi=ieeelongdouble.  If
-	 we have clone or target attributes, this will be called a second
-	 time.  We want to create the built-in function only once.  */
-     if (mode == TFmode && TARGET_IEEEQUAD && !complex_muldiv_init_p)
-       {
-	 complex_muldiv_init_p = true;
-	 built_in_function fncode_mul =
-	   (built_in_function) (BUILT_IN_COMPLEX_MUL_MIN + TCmode
-				- MIN_MODE_COMPLEX_FLOAT);
-	 built_in_function fncode_div =
-	   (built_in_function) (BUILT_IN_COMPLEX_DIV_MIN + TCmode
-				- MIN_MODE_COMPLEX_FLOAT);
-
-	 tree fntype = build_function_type_list (complex_long_double_type_node,
-						 long_double_type_node,
-						 long_double_type_node,
-						 long_double_type_node,
-						 long_double_type_node,
-						 NULL_TREE);
-
-	 create_complex_muldiv ("__mulkc3", fncode_mul, fntype);
-	 create_complex_muldiv ("__divkc3", fncode_div, fntype);
-       }
-
       set_optab_libfunc (add_optab, mode, "__addkf3");
       set_optab_libfunc (sub_optab, mode, "__subkf3");
       set_optab_libfunc (neg_optab, mode, "__negkf2");
@@ -11442,7 +11681,16 @@ bool
 rs6000_is_valid_rotate_dot_mask (rtx mask, machine_mode mode)
 {
   int nb, ne;
-  return rs6000_is_valid_mask (mask, &nb, &ne, mode) && nb >= ne && ne > 0;
+  if (rs6000_is_valid_mask (mask, &nb, &ne, mode) && nb >= ne && ne > 0)
+    {
+      if (TARGET_64BIT)
+	return true;
+      /* *rotldi3_mask_dot requires for -m32 -mpowerpc64 that the mask is
+	 <= 0x7fffffff.  */
+      return (UINTVAL (mask) << (63 - nb)) <= 0x7fffffff;
+    }
+
+  return false;
 }
 
 /* Return whether MASK (a CONST_INT) is a valid mask for any rlwinm, rldicl,
@@ -17323,7 +17571,7 @@ output_toc (FILE *file, rtx x, int labelno, machine_mode mode)
       if (DECIMAL_FLOAT_MODE_P (GET_MODE (x)))
 	REAL_VALUE_TO_TARGET_DECIMAL128 (*CONST_DOUBLE_REAL_VALUE (x), k);
       else
-	REAL_VALUE_TO_TARGET_LONG_DOUBLE (*CONST_DOUBLE_REAL_VALUE (x), k);
+	real_to_target (k, CONST_DOUBLE_REAL_VALUE (x), GET_MODE (x));
 
       if (TARGET_64BIT)
 	{
@@ -20406,8 +20654,7 @@ static void
 rs6000_set_default_type_attributes (tree type)
 {
   if (rs6000_default_long_calls
-      && (TREE_CODE (type) == FUNCTION_TYPE
-	  || TREE_CODE (type) == METHOD_TYPE))
+      && FUNC_OR_METHOD_TYPE_P (type))
     TYPE_ATTRIBUTES (type) = tree_cons (get_identifier ("longcall"),
 					NULL_TREE,
 					TYPE_ATTRIBUTES (type));
@@ -20649,7 +20896,7 @@ rs6000_elf_in_small_data_p (const_tree decl)
   if (TREE_CODE (decl) == FUNCTION_DECL)
     return false;
 
-  if (TREE_CODE (decl) == VAR_DECL && DECL_SECTION_NAME (decl))
+  if (VAR_P (decl) && DECL_SECTION_NAME (decl))
     {
       const char *section = DECL_SECTION_NAME (decl);
       if (compare_section_name (section, ".sdata")
@@ -21373,7 +21620,7 @@ rs6000_xcoff_asm_named_section (const char *name, unsigned int flags,
 }
 
 #define IN_NAMED_SECTION(DECL) \
-  ((TREE_CODE (DECL) == FUNCTION_DECL || TREE_CODE (DECL) == VAR_DECL) \
+  ((TREE_CODE (DECL) == FUNCTION_DECL || VAR_P (DECL)) \
    && DECL_SECTION_NAME (DECL) != NULL)
 
 static section *
@@ -21864,7 +22111,7 @@ rs6000_xcoff_encode_section_info (tree decl, rtx rtl, int first)
 
   flags = SYMBOL_REF_FLAGS (symbol);
 
-  if (TREE_CODE (decl) == VAR_DECL && DECL_THREAD_LOCAL_P (decl))
+  if (VAR_P (decl) && DECL_THREAD_LOCAL_P (decl))
     flags &= ~SYMBOL_FLAG_HAS_BLOCK_INFO;
 
   SYMBOL_REF_FLAGS (symbol) = flags;
@@ -22125,7 +22372,9 @@ rs6000_rtx_costs (rtx x, machine_mode mode, int outer_code,
 	    *total = rs6000_cost->divsi;
 	}
       /* Add in shift and subtract for MOD unless we have a mod instruction. */
-      if (!TARGET_MODULO && (code == MOD || code == UMOD))
+      if ((!TARGET_MODULO
+	   || (RS6000_DISABLE_SCALAR_MODULO && SCALAR_INT_MODE_P (mode)))
+	 && (code == MOD || code == UMOD))
 	*total += COSTS_N_INSNS (2);
       return false;
 
@@ -23398,10 +23647,10 @@ altivec_expand_vec_perm_const (rtx target, rtx op0, rtx op1,
 		      && GET_MODE (XEXP (op0, 0)) != V8HImode)))
 	    continue;
 
-          /* For little-endian, the two input operands must be swapped
-             (or swapped back) to ensure proper right-to-left numbering
-             from 0 to 2N-1.  */
-	  if (swapped ^ !BYTES_BIG_ENDIAN
+	  /* For little-endian, the two input operands must be swapped
+	     (or swapped back) to ensure proper right-to-left numbering
+	     from 0 to 2N-1.  */
+	  if (swapped == BYTES_BIG_ENDIAN
 	      && icode != CODE_FOR_vsx_xxpermdi_v16qi)
 	    std::swap (op0, op1);
 	  if (imode != V16QImode)
@@ -23745,7 +23994,7 @@ rs6000_function_value (const_tree valtype,
   /* VSX is a superset of Altivec and adds V2DImode/V2DFmode.  Since the same
      return register is used in both cases, and we won't see V2DImode/V2DFmode
      for pure altivec, combine the two cases.  */
-  else if ((TREE_CODE (valtype) == VECTOR_TYPE || VECTOR_ALIGNMENT_P (mode))
+  else if ((VECTOR_TYPE_P (valtype) || VECTOR_ALIGNMENT_P (mode))
 	   && TARGET_ALTIVEC && TARGET_ALTIVEC_ABI
 	   && ALTIVEC_OR_VSX_VECTOR_MODE (mode))
     regno = ALTIVEC_ARG_RETURN;
@@ -24125,7 +24374,7 @@ invalid_arg_for_unprototyped_fn (const_tree typelist, const_tree funcdecl, const
 {
   return (!rs6000_darwin64_abi
 	  && typelist == 0
-          && TREE_CODE (TREE_TYPE (val)) == VECTOR_TYPE
+	  && VECTOR_TYPE_P (TREE_TYPE (val))
           && (funcdecl == NULL_TREE
               || (TREE_CODE (funcdecl) == FUNCTION_DECL
                   && DECL_BUILT_IN_CLASS (funcdecl) != BUILT_IN_MD)))
@@ -25436,9 +25685,12 @@ rs6000_update_ipa_fn_target_info (unsigned int &info, const gimple *stmt)
   /* Assume inline asm can use any instruction features.  */
   if (gimple_code (stmt) == GIMPLE_ASM)
     {
-      /* Should set any bits we concerned, for now OPTION_MASK_HTM is
-	 the only bit we care about.  */
-      info |= RS6000_FN_TARGET_INFO_HTM;
+      const char *asm_str = gimple_asm_string (as_a<const gasm *> (stmt));
+      /* Ignore empty inline asm string.  */
+      if (strlen (asm_str) > 0)
+	/* Should set any bits we concerned, for now OPTION_MASK_HTM is
+	   the only bit we care about.  */
+	info |= RS6000_FN_TARGET_INFO_HTM;
       return false;
     }
   else if (gimple_code (stmt) == GIMPLE_CALL)
@@ -25469,49 +25721,44 @@ rs6000_can_inline_p (tree caller, tree callee)
   tree caller_tree = DECL_FUNCTION_SPECIFIC_TARGET (caller);
   tree callee_tree = DECL_FUNCTION_SPECIFIC_TARGET (callee);
 
-  /* If the callee has no option attributes, then it is ok to inline.  */
+  /* If the caller/callee has option attributes, then use them.
+     Otherwise, use the command line options.  */
   if (!callee_tree)
-    ret = true;
+    callee_tree = target_option_default_node;
+  if (!caller_tree)
+    caller_tree = target_option_default_node;
 
-  else
+  struct cl_target_option *callee_opts = TREE_TARGET_OPTION (callee_tree);
+  struct cl_target_option *caller_opts = TREE_TARGET_OPTION (caller_tree);
+
+  HOST_WIDE_INT callee_isa = callee_opts->x_rs6000_isa_flags;
+  HOST_WIDE_INT caller_isa = caller_opts->x_rs6000_isa_flags;
+  HOST_WIDE_INT explicit_isa = callee_opts->x_rs6000_isa_flags_explicit;
+
+  cgraph_node *callee_node = cgraph_node::get (callee);
+  if (ipa_fn_summaries && ipa_fn_summaries->get (callee_node) != NULL)
     {
-      HOST_WIDE_INT caller_isa;
-      struct cl_target_option *callee_opts = TREE_TARGET_OPTION (callee_tree);
-      HOST_WIDE_INT callee_isa = callee_opts->x_rs6000_isa_flags;
-      HOST_WIDE_INT explicit_isa = callee_opts->x_rs6000_isa_flags_explicit;
-
-      /* If the caller has option attributes, then use them.
-	 Otherwise, use the command line options.  */
-      if (caller_tree)
-	caller_isa = TREE_TARGET_OPTION (caller_tree)->x_rs6000_isa_flags;
-      else
-	caller_isa = rs6000_isa_flags;
-
-      cgraph_node *callee_node = cgraph_node::get (callee);
-      if (ipa_fn_summaries && ipa_fn_summaries->get (callee_node) != NULL)
+      unsigned int info = ipa_fn_summaries->get (callee_node)->target_info;
+      if ((info & RS6000_FN_TARGET_INFO_HTM) == 0)
 	{
-	  unsigned int info = ipa_fn_summaries->get (callee_node)->target_info;
-	  if ((info & RS6000_FN_TARGET_INFO_HTM) == 0)
-	    {
-	      callee_isa &= ~OPTION_MASK_HTM;
-	      explicit_isa &= ~OPTION_MASK_HTM;
-	    }
+	  callee_isa &= ~OPTION_MASK_HTM;
+	  explicit_isa &= ~OPTION_MASK_HTM;
 	}
-
-      /* Ignore -mpower8-fusion and -mpower10-fusion options for inlining
-	 purposes.  */
-      callee_isa &= ~(OPTION_MASK_P8_FUSION | OPTION_MASK_P10_FUSION);
-      explicit_isa &= ~(OPTION_MASK_P8_FUSION | OPTION_MASK_P10_FUSION);
-
-      /* The callee's options must be a subset of the caller's options, i.e.
-	 a vsx function may inline an altivec function, but a no-vsx function
-	 must not inline a vsx function.  However, for those options that the
-	 callee has explicitly enabled or disabled, then we must enforce that
-	 the callee's and caller's options match exactly; see PR70010.  */
-      if (((caller_isa & callee_isa) == callee_isa)
-	  && (caller_isa & explicit_isa) == (callee_isa & explicit_isa))
-	ret = true;
     }
+
+  /* Ignore -mpower8-fusion and -mpower10-fusion options for inlining
+     purposes.  */
+  callee_isa &= ~(OPTION_MASK_P8_FUSION | OPTION_MASK_P10_FUSION);
+  explicit_isa &= ~(OPTION_MASK_P8_FUSION | OPTION_MASK_P10_FUSION);
+
+  /* The callee's options must be a subset of the caller's options, i.e.
+     a vsx function may inline an altivec function, but a no-vsx function
+     must not inline a vsx function.  However, for those options that the
+     callee has explicitly enabled or disabled, then we must enforce that
+     the callee's and caller's options match exactly; see PR70010.  */
+  if (((caller_isa & callee_isa) == callee_isa)
+      && (caller_isa & explicit_isa) == (callee_isa & explicit_isa))
+    ret = true;
 
   if (TARGET_DEBUG_TARGET)
     fprintf (stderr, "rs6000_can_inline_p:, caller %s, callee %s, %s inline\n",
@@ -28225,6 +28472,27 @@ rs6000_starting_frame_offset (void)
   return RS6000_STARTING_FRAME_OFFSET;
 }
 
+/* Internal function to return the built-in function id for the complex
+   multiply operation for a given mode.  */
+
+static inline built_in_function
+complex_multiply_builtin_code (machine_mode mode)
+{
+  gcc_assert (IN_RANGE (mode, MIN_MODE_COMPLEX_FLOAT, MAX_MODE_COMPLEX_FLOAT));
+  int func = BUILT_IN_COMPLEX_MUL_MIN + mode - MIN_MODE_COMPLEX_FLOAT;
+  return (built_in_function) func;
+}
+
+/* Internal function to return the built-in function id for the complex divide
+   operation for a given mode.  */
+
+static inline built_in_function
+complex_divide_builtin_code (machine_mode mode)
+{
+  gcc_assert (IN_RANGE (mode, MIN_MODE_COMPLEX_FLOAT, MAX_MODE_COMPLEX_FLOAT));
+  int func = BUILT_IN_COMPLEX_DIV_MIN + mode - MIN_MODE_COMPLEX_FLOAT;
+  return (built_in_function) func;
+}
 
 /* On 64-bit Linux and Freebsd systems, possibly switch the long double library
    function names from <foo>l to <foo>f128 if the default long double type is
@@ -28243,11 +28511,53 @@ rs6000_starting_frame_offset (void)
    only do this transformation if the __float128 type is enabled.  This
    prevents us from doing the transformation on older 32-bit ports that might
    have enabled using IEEE 128-bit floating point as the default long double
-   type.  */
+   type.
+
+   We also use the TARGET_MANGLE_DECL_ASSEMBLER_NAME hook to change the
+   function names used for complex multiply and divide to the appropriate
+   names.  */
 
 static tree
 rs6000_mangle_decl_assembler_name (tree decl, tree id)
 {
+  /* Handle complex multiply/divide.  For IEEE 128-bit, use __mulkc3 or
+     __divkc3 and for IBM 128-bit use __multc3 and __divtc3.  */
+  if (TARGET_FLOAT128_TYPE
+      && TREE_CODE (decl) == FUNCTION_DECL
+      && DECL_IS_UNDECLARED_BUILTIN (decl)
+      && DECL_BUILT_IN_CLASS (decl) == BUILT_IN_NORMAL)
+    {
+      built_in_function id = DECL_FUNCTION_CODE (decl);
+      const char *newname = NULL;
+
+      if (id == complex_multiply_builtin_code (KCmode))
+	newname = "__mulkc3";
+
+      else if (id == complex_multiply_builtin_code (ICmode))
+	newname = "__multc3";
+
+      else if (id == complex_multiply_builtin_code (TCmode))
+	newname = (TARGET_IEEEQUAD) ? "__mulkc3" : "__multc3";
+
+      else if (id == complex_divide_builtin_code (KCmode))
+	newname = "__divkc3";
+
+      else if (id == complex_divide_builtin_code (ICmode))
+	newname = "__divtc3";
+
+      else if (id == complex_divide_builtin_code (TCmode))
+	newname = (TARGET_IEEEQUAD) ? "__divkc3" : "__divtc3";
+
+      if (newname)
+	{
+	  if (TARGET_DEBUG_BUILTIN)
+	    fprintf (stderr, "Map complex mul/div => %s\n", newname);
+
+	  return get_identifier (newname);
+	}
+    }
+
+  /* Map long double built-in functions if long double is IEEE 128-bit.  */
   if (TARGET_FLOAT128_TYPE && TARGET_IEEEQUAD && TARGET_LONG_DOUBLE_128
       && TREE_CODE (decl) == FUNCTION_DECL
       && DECL_IS_UNDECLARED_BUILTIN (decl)
@@ -28723,7 +29033,6 @@ vec_const_128bit_to_bytes (rtx op,
 
   info->all_words_same
     = (info->words[0] == info->words[1]
-       && info->words[0] == info->words[1]
        && info->words[0] == info->words[2]
        && info->words[0] == info->words[3]);
 

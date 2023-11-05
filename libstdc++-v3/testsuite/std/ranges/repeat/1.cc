@@ -1,4 +1,3 @@
-// { dg-options "-std=gnu++23" }
 // { dg-do run { target c++23 } }
 
 #include <ranges>
@@ -120,6 +119,24 @@ test04()
   return true;
 }
 
+void
+test05()
+{
+  // LWG 3796
+  ranges::repeat_view<int> r;
+}
+
+void
+test06()
+{
+  struct move_only {
+    move_only() { }
+    move_only(move_only&&) { }
+  };
+  // P2494R2 Relaxing range adaptors to allow for move only types
+  static_assert( requires { views::repeat(move_only{}, 2); } );
+}
+
 int
 main()
 {
@@ -127,4 +144,6 @@ main()
   static_assert(test02());
   static_assert(test03());
   static_assert(test04());
+  test05();
+  test06();
 }

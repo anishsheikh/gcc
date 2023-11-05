@@ -1,6 +1,6 @@
 
 /* Compiler implementation of the D programming language
- * Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * written by Walter Bright
  * https://www.digitalmars.com
  * Distributed under the Boost Software License, Version 1.0.
@@ -74,23 +74,23 @@ public:
     unsigned errors;    // if any errors in file
     unsigned numlines;  // number of lines in source file
     FileType filetype;  // source file type
-    bool hasAlwaysInlines; // contains references to functions that must be inlined
-    bool isPackageFile; // if it is a package.d
+    d_bool hasAlwaysInlines; // contains references to functions that must be inlined
+    d_bool isPackageFile; // if it is a package.d
     Package *pkg;       // if isPackageFile is true, the Package that contains this package.d
     Strings contentImportedFiles;  // array of files whose content was imported
     int needmoduleinfo;
-    int selfimports;            // 0: don't know, 1: does not, 2: does
+    ThreeState selfimports;
+    ThreeState rootimports;
     void* tagSymTab;            // ImportC: tag symbols that conflict with other symbols used as the index
     OutBuffer defines;          // collect all the #define lines here
     bool selfImports();         // returns true if module imports itself
 
-    int rootimports;            // 0: don't know, 1: does not, 2: does
     bool rootImports();         // returns true if module imports root module
 
-    int insearch;
     Identifier *searchCacheIdent;
     Dsymbol *searchCacheSymbol; // cached value of search
     int searchCacheFlags;       // cached flags
+    d_bool insearch;
 
     // module from command line we're imported from,
     // i.e. a module that will be taken all the
@@ -127,7 +127,6 @@ public:
     Dsymbol *search(const Loc &loc, Identifier *ident, int flags = SearchLocalsOnly) override;
     bool isPackageAccessible(Package *p, Visibility visibility, int flags = 0) override;
     Dsymbol *symtabInsert(Dsymbol *s) override;
-    void deleteObjFile();
     static void runDeferredSemantic();
     static void runDeferredSemantic2();
     static void runDeferredSemantic3();
@@ -142,7 +141,7 @@ public:
 
     int doppelganger;           // sub-module
     Symbol *cov;                // private uint[] __coverage;
-    unsigned *covb;             // bit array of valid code line numbers
+    DArray<unsigned> covb;      // bit array of valid code line numbers
 
     Symbol *sictor;             // module order independent constructor
     Symbol *sctor;              // module constructor
@@ -165,8 +164,10 @@ struct ModuleDeclaration
     Loc loc;
     Identifier *id;
     DArray<Identifier*> packages;  // array of Identifier's representing packages
-    bool isdeprecated;  // if it is a deprecated module
+    d_bool isdeprecated;  // if it is a deprecated module
     Expression *msg;
 
     const char *toChars() const;
 };
+
+extern void getLocalClasses(Module* mod, Array<ClassDeclaration* >& aclasses);

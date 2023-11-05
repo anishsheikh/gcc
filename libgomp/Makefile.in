@@ -382,6 +382,7 @@ EXEEXT = @EXEEXT@
 FC = @FC@
 FCFLAGS = @FCFLAGS@
 FGREP = @FGREP@
+FLOCK = @FLOCK@
 GREP = @GREP@
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL_DATA@
@@ -428,13 +429,13 @@ PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_URL = @PACKAGE_URL@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
-PERL = @PERL@
 RANLIB = @RANLIB@
 SECTION_LDFLAGS = @SECTION_LDFLAGS@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 STRIP = @STRIP@
+SYSROOT_CFLAGS_FOR_TARGET = @SYSROOT_CFLAGS_FOR_TARGET@
 VERSION = @VERSION@
 XCFLAGS = @XCFLAGS@
 XLDFLAGS = @XLDFLAGS@
@@ -534,8 +535,11 @@ nodist_toolexeclib_HEADERS = libgomp.spec
 @LIBGOMP_BUILD_VERSIONED_SHLIB_GNU_TRUE@@LIBGOMP_BUILD_VERSIONED_SHLIB_TRUE@libgomp_version_dep = libgomp.ver
 @LIBGOMP_BUILD_VERSIONED_SHLIB_SUN_TRUE@@LIBGOMP_BUILD_VERSIONED_SHLIB_TRUE@libgomp_version_dep = libgomp.ver-sun
 libgomp_version_info = -version-info $(libtool_VERSION)
+@ENABLE_DARWIN_AT_RPATH_TRUE@libgomp_darwin_rpath =  \
+@ENABLE_DARWIN_AT_RPATH_TRUE@	-Wc,-nodefaultrpaths \
+@ENABLE_DARWIN_AT_RPATH_TRUE@	-Wl,-rpath,@loader_path
 libgomp_la_LDFLAGS = $(libgomp_version_info) $(libgomp_version_script) \
-        $(lt_host_flags)
+        $(lt_host_flags) $(libgomp_darwin_rpath)
 
 libgomp_la_LIBADD = $(DL_LIBS)
 libgomp_la_DEPENDENCIES = $(libgomp_version_dep)

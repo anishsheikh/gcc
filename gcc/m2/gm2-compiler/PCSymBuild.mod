@@ -806,7 +806,7 @@ PROCEDURE InitDesExpr (des: CARDINAL) ;
 VAR
    e: exprNode ;
 BEGIN
-   NEW(e) ;
+   NEW (e) ;
    WITH e^ DO
       tag := designator ;
       CASE tag OF
@@ -819,6 +819,8 @@ BEGIN
                       left := NIL
                    END
 
+      ELSE
+         InternalError ('expecting designator')
       END
    END ;
    PushAddress (exprStack, e)
@@ -1154,7 +1156,7 @@ PROCEDURE InitFunction (m: constType; p, t: CARDINAL; f, s: exprNode; more: BOOL
 VAR
    n: exprNode ;
 BEGIN
-   NEW(n) ;
+   NEW (n) ;
    WITH n^ DO
       tag := function ;
       CASE tag OF
@@ -1168,9 +1170,11 @@ BEGIN
                     third := more
                  END
 
+      ELSE
+         InternalError ('expecting function')
       END
    END ;
-   PushAddress(exprStack, n)
+   PushAddress (exprStack, n)
 END InitFunction ;
 
 
@@ -1194,6 +1198,8 @@ BEGIN
                    expr := e
                  END
 
+      ELSE
+         InternalError ('expecting convert')
       END
    END ;
    PushAddress(exprStack, n)
@@ -1208,7 +1214,7 @@ PROCEDURE InitLeaf (m: constType; s, t: CARDINAL) ;
 VAR
    l: exprNode ;
 BEGIN
-   NEW(l) ;
+   NEW (l) ;
    WITH l^ DO
       tag := leaf ;
       CASE tag OF
@@ -1219,9 +1225,11 @@ BEGIN
                 sym := s
              END
 
+      ELSE
+         InternalError ('expecting leaf')
       END
    END ;
-   PushAddress(exprStack, l)
+   PushAddress (exprStack, l)
 END InitLeaf ;
 
 
@@ -1342,21 +1350,21 @@ PROCEDURE TypeToMeta (type: CARDINAL) : constType ;
 BEGIN
    IF type=Char
    THEN
-      RETURN( char )
+      RETURN char
    ELSIF type=Boolean
    THEN
-      RETURN( boolean )
-   ELSIF IsRealType(type)
+      RETURN boolean
+   ELSIF IsRealType (type)
    THEN
-      RETURN( rtype )
-   ELSIF IsComplexType(type)
+      RETURN rtype
+   ELSIF IsComplexType (type)
    THEN
-      RETURN( ctype )
-   ELSIF IsOrdinalType(type)
+      RETURN ctype
+   ELSIF IsOrdinalType (type)
    THEN
-      RETURN( ztype )
+      RETURN ztype
    ELSE
-      RETURN( unknown )
+      RETURN unknown
    END
 END TypeToMeta ;
 
@@ -1371,33 +1379,35 @@ END TypeToMeta ;
 
 PROCEDURE buildConstFunction (func: CARDINAL; n: CARDINAL) ;
 VAR
-   i   : CARDINAL ;
-   f, s: exprNode ;
+   i     : CARDINAL ;
+   first,
+   second: exprNode ;
 BEGIN
-   f := NIL ;
-   s := NIL ;
+   first := NIL ;
+   second := NIL ;
    IF n=1
    THEN
-      f := PopAddress(exprStack)
+      first := PopAddress (exprStack)
    ELSIF n>=2
    THEN
       i := n ;
       WHILE i>2 DO
-         s := PopAddress(exprStack) ;
-         DISPOSE(s) ;
-         DEC(i)
+         second := PopAddress (exprStack) ;
+         DISPOSE (second) ;
+         DEC (i)
       END ;
-      s := PopAddress(exprStack) ;
-      f := PopAddress(exprStack)
+      second := PopAddress (exprStack) ;
+      first := PopAddress (exprStack)
    END ;
    IF func=Val
    THEN
-      InitConvert(cast, NulSym, f, s)
+      InitConvert (cast, NulSym, first, second)
    ELSIF (func=Max) OR (func=Min)
    THEN
-      InitFunction(unknown, func, NulSym, f, s, FALSE)
+      InitFunction (unknown, func, NulSym, first, second, FALSE)
    ELSE
-      InitFunction(TypeToMeta(GetSkippedType(func)), func, GetSkippedType(func), f, s, n>2)
+      InitFunction (TypeToMeta(GetSkippedType(func)), func, GetSkippedType(func),
+                    first, second, n>2)
    END
 END buildConstFunction ;
 
@@ -1511,9 +1521,9 @@ PROCEDURE InitBinary (m: constType; t: CARDINAL; o: Name) ;
 VAR
    l, r, b: exprNode ;
 BEGIN
-   r := PopAddress(exprStack) ;
-   l := PopAddress(exprStack) ;
-   NEW(b) ;
+   r := PopAddress (exprStack) ;
+   l := PopAddress (exprStack) ;
+   NEW (b) ;
    WITH b^ DO
       tag := binary ;
       CASE tag OF
@@ -1525,9 +1535,11 @@ BEGIN
                   right := r ;
                   op := o
                END
+      ELSE
+         InternalError ('expecting binary')
       END
    END ;
-   PushAddress(exprStack, b)
+   PushAddress (exprStack, b)
 END InitBinary ;
 
 
@@ -1539,10 +1551,10 @@ PROCEDURE BuildRelationConst ;
 VAR
    op: Name ;
 BEGIN
-   PopT(op) ;
+   PopT (op) ;
    IF inDesignator
    THEN
-      InitBinary(boolean, Boolean, op)
+      InitBinary (boolean, Boolean, op)
    END
 END BuildRelationConst ;
 
@@ -1555,10 +1567,10 @@ PROCEDURE BuildBinaryConst ;
 VAR
    op: Name ;
 BEGIN
-   PopT(op) ;
+   PopT (op) ;
    IF inDesignator
    THEN
-      InitBinary(unknown, NulSym, op)
+      InitBinary (unknown, NulSym, op)
    END
 END BuildBinaryConst ;
 
@@ -1584,6 +1596,8 @@ BEGIN
                  op := o
               END
 
+      ELSE
+         InternalError ('expecting unary')
       END
    END ;
    PushAddress(exprStack, b)
@@ -1788,7 +1802,7 @@ BEGIN
             THEN
                IF (func=Min) OR (func=Max)
                THEN
-                  IF IsEnumeration(sym) OR IsSet(sym)
+                  IF IsSet (sym)
                   THEN
                      type := SkipType(GetType(sym))
                   ELSE
@@ -1832,11 +1846,12 @@ BEGIN
                type := getEtype(first) ;
                RETURN( TRUE )
             END ;
-            RETURN( WalkFunctionParam(func, first) )
+            RETURN WalkFunctionParam (func, first)
          ELSE
             MetaError1('not expecting this function inside a constant expression {%1Dad}', func)
          END
-      END
+      END ;
+      RETURN( TRUE )
    END
 END WalkFunction ;
 
@@ -2059,9 +2074,13 @@ PROCEDURE WalkDes (d: exprNode) : BOOLEAN ;
 BEGIN
    IF d=NIL
    THEN
-      RETURN( FALSE )
+      RETURN FALSE
    ELSE
-      RETURN( doWalkDes(d) )
+      IF Debugging
+      THEN
+         DebugDes (d)
+      END ;
+      RETURN doWalkDes (d)
    END
 END WalkDes ;
 

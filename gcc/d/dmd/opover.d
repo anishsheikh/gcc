@@ -3,7 +3,7 @@
  *
  * Specification: $(LINK2 https://dlang.org/spec/operatoroverloading.html, Operator Overloading)
  *
- * Copyright:   Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/opover.d, _opover.d)
@@ -32,6 +32,7 @@ import dmd.globals;
 import dmd.hdrgen;
 import dmd.id;
 import dmd.identifier;
+import dmd.location;
 import dmd.mtype;
 import dmd.statement;
 import dmd.tokens;
@@ -42,7 +43,7 @@ import dmd.visitor;
  * Determine if operands of binary op can be reversed
  * to fit operator overload.
  */
-bool isCommutative(EXP op)
+bool isCommutative(EXP op) @safe
 {
     switch (op)
     {
@@ -292,6 +293,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 {
                     ie = (*ae.arguments)[0].isIntervalExp();
                 }
+                Type att = null; // first cyclic `alias this` type
                 while (true)
                 {
                     if (ae.e1.op == EXP.error)
@@ -353,7 +355,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         return result;
                     }
                     // Didn't find it. Forward to aliasthis
-                    if (ad.aliasthis && !isRecursiveAliasThis(ae.att1, ae.e1.type))
+                    if (ad.aliasthis && !isRecursiveAliasThis(att, ae.e1.type))
                     {
                         /* Rewrite op(a[arguments]) as:
                          *      op(a.aliasthis[arguments])
@@ -369,13 +371,18 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
             }
             e.e1 = e.e1.expressionSemantic(sc);
             e.e1 = resolveProperties(sc, e.e1);
-            if (e.e1.op == EXP.error)
+            Type att = null; // first cyclic `alias this` type
+            while (1)
             {
-                return e.e1;
-            }
-            AggregateDeclaration ad = isAggregate(e.e1.type);
-            if (ad)
-            {
+                if (e.e1.op == EXP.error)
+                {
+                    return e.e1;
+                }
+
+                AggregateDeclaration ad = isAggregate(e.e1.type);
+                if (!ad)
+                    break;
+
                 Dsymbol fd = null;
                 /* Rewrite as:
                  *      e1.opUnary!(op)()
@@ -398,23 +405,25 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     {
                         // @@@DEPRECATED_2.110@@@.
                         // Deprecated in 2.088, made an error in 2.100
-                        e.error("`%s` is obsolete.  Use `opUnary(string op)() if (op == \"%s\")` instead.", id.toChars(), EXPtoString(e.op).ptr);
+                        error(e.loc, "`%s` is obsolete.  Use `opUnary(string op)() if (op == \"%s\")` instead.", id.toChars(), EXPtoString(e.op).ptr);
                         return ErrorExp.get();
                     }
                 }
                 // Didn't find it. Forward to aliasthis
-                if (ad.aliasthis && !isRecursiveAliasThis(e.att1, e.e1.type))
+                if (ad.aliasthis && !isRecursiveAliasThis(att, e.e1.type))
                 {
                     /* Rewrite op(e1) as:
                      *      op(e1.aliasthis)
                      */
                     //printf("att una %s e1 = %s\n", EXPtoString(op).ptr, this.e1.type.toChars());
-                    Expression e1 = new DotIdExp(e.loc, e.e1, ad.aliasthis.ident);
-                    UnaExp ue = cast(UnaExp)e.copy();
-                    ue.e1 = e1;
-                    result = ue.trySemantic(sc);
-                    return result;
+                    if (auto e1 = resolveAliasThis(sc, e.e1, true))
+                    {
+                        e.e1 = e1;
+                        continue;
+                    }
+                    break;
                 }
+                break;
             }
             return result;
         }
@@ -432,6 +441,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 ie = (*ae.arguments)[0].isIntervalExp();
             }
             Expression result;
+            Type att = null; // first cyclic `alias this` type
             while (true)
             {
                 if (ae.e1.op == EXP.error)
@@ -525,7 +535,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     return result;
                 }
                 // Didn't find it. Forward to aliasthis
-                if (ad.aliasthis && !isRecursiveAliasThis(ae.att1, ae.e1.type))
+                if (ad.aliasthis && !isRecursiveAliasThis(att, ae.e1.type))
                 {
                     //printf("att arr e1 = %s\n", this.e1.type.toChars());
                     /* Rewrite op(a[arguments]) as:
@@ -546,7 +556,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
          * This is mostly the same as UnaryExp::op_overload(), but has
          * a different rewrite.
          */
-        Expression visitCast(CastExp e)
+        Expression visitCast(CastExp e, Type att = null)
         {
             //printf("CastExp::op_overload() (%s)\n", e.toChars());
             Expression result;
@@ -577,7 +587,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     return result;
                 }
                 // Didn't find it. Forward to aliasthis
-                if (ad.aliasthis && !isRecursiveAliasThis(e.att1, e.e1.type))
+                if (ad.aliasthis && !isRecursiveAliasThis(att, e.e1.type))
                 {
                     /* Rewrite op(e1) as:
                      *      op(e1.aliasthis)
@@ -586,7 +596,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     {
                         result = e.copy();
                         (cast(UnaExp)result).e1 = e1;
-                        result = result.op_overload(sc);
+                        result = visitCast(result.isCastExp(), att);
                         return result;
                     }
                 }
@@ -599,8 +609,6 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
             //printf("BinExp::op_overload() (%s)\n", e.toChars());
             Identifier id = opId(e);
             Identifier id_r = opId_r(e);
-            Expressions args1;
-            Expressions args2;
             int argsset = 0;
             AggregateDeclaration ad1 = isAggregate(e.e1.type);
             AggregateDeclaration ad2 = isAggregate(e.e2.type);
@@ -636,7 +644,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     s = search_function(ad1, Id.opBinary);
                     if (s && !s.isTemplateDeclaration())
                     {
-                        e.e1.error("`%s.opBinary` isn't a template", e.e1.toChars());
+                        error(e.e1.loc, "`%s.opBinary` isn't a template", e.e1.toChars());
                         return ErrorExp.get();
                     }
                 }
@@ -645,7 +653,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     s_r = search_function(ad2, Id.opBinaryRight);
                     if (s_r && !s_r.isTemplateDeclaration())
                     {
-                        e.e2.error("`%s.opBinaryRight` isn't a template", e.e2.toChars());
+                        error(e.e2.loc, "`%s.opBinaryRight` isn't a template", e.e2.toChars());
                         return ErrorExp.get();
                     }
                     if (s_r && s_r == s) // https://issues.dlang.org/show_bug.cgi?id=12778
@@ -670,9 +678,9 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         // @@@DEPRECATED_2.110@@@.
                         // Deprecated in 2.088, made an error in 2.100
                         if (id == Id.postinc || id == Id.postdec)
-                            e.error("`%s` is obsolete.  Use `opUnary(string op)() if (op == \"%s\")` instead.", id.toChars(), EXPtoString(e.op).ptr);
+                            error(e.loc, "`%s` is obsolete.  Use `opUnary(string op)() if (op == \"%s\")` instead.", id.toChars(), EXPtoString(e.op).ptr);
                         else
-                            e.error("`%s` is obsolete.  Use `opBinary(string op)(...) if (op == \"%s\")` instead.", id.toChars(), EXPtoString(e.op).ptr);
+                            error(e.loc, "`%s` is obsolete.  Use `opBinary(string op)(...) if (op == \"%s\")` instead.", id.toChars(), EXPtoString(e.op).ptr);
                         return ErrorExp.get();
                     }
                 }
@@ -688,11 +696,13 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     {
                         // @@@DEPRECATED_2.110@@@.
                         // Deprecated in 2.088, made an error in 2.100
-                        e.error("`%s` is obsolete.  Use `opBinaryRight(string op)(...) if (op == \"%s\")` instead.", id_r.toChars(), EXPtoString(e.op).ptr);
+                        error(e.loc, "`%s` is obsolete.  Use `opBinaryRight(string op)(...) if (op == \"%s\")` instead.", id_r.toChars(), EXPtoString(e.op).ptr);
                         return ErrorExp.get();
                     }
                 }
             }
+            Expressions* args1 = new Expressions();
+            Expressions* args2 = new Expressions();
             if (s || s_r)
             {
                 /* Try:
@@ -701,16 +711,16 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                  * and see which is better.
                  */
                 args1.setDim(1);
-                args1[0] = e.e1;
-                expandTuples(&args1);
+                (*args1)[0] = e.e1;
+                expandTuples(args1);
                 args2.setDim(1);
-                args2[0] = e.e2;
-                expandTuples(&args2);
+                (*args2)[0] = e.e2;
+                expandTuples(args2);
                 argsset = 1;
                 MatchAccumulator m;
                 if (s)
                 {
-                    functionResolve(m, s, e.loc, sc, tiargs, e.e1.type, &args2);
+                    functionResolve(m, s, e.loc, sc, tiargs, e.e1.type, ArgumentList(args2));
                     if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                     {
                         return ErrorExp.get();
@@ -719,7 +729,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 FuncDeclaration lastf = m.lastf;
                 if (s_r)
                 {
-                    functionResolve(m, s_r, e.loc, sc, tiargs, e.e2.type, &args1);
+                    functionResolve(m, s_r, e.loc, sc, tiargs, e.e2.type, ArgumentList(args1));
                     if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                     {
                         return ErrorExp.get();
@@ -728,7 +738,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 if (m.count > 1)
                 {
                     // Error, ambiguous
-                    e.error("overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
+                    error(e.loc, "overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
                 }
                 else if (m.last == MATCH.nomatch)
                 {
@@ -783,16 +793,16 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         if (!argsset)
                         {
                             args1.setDim(1);
-                            args1[0] = e.e1;
-                            expandTuples(&args1);
+                            (*args1)[0] = e.e1;
+                            expandTuples(args1);
                             args2.setDim(1);
-                            args2[0] = e.e2;
-                            expandTuples(&args2);
+                            (*args2)[0] = e.e2;
+                            expandTuples(args2);
                         }
                         MatchAccumulator m;
                         if (s_r)
                         {
-                            functionResolve(m, s_r, e.loc, sc, tiargs, e.e1.type, &args2);
+                            functionResolve(m, s_r, e.loc, sc, tiargs, e.e1.type, ArgumentList(args2));
                             if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                             {
                                 return ErrorExp.get();
@@ -801,7 +811,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         FuncDeclaration lastf = m.lastf;
                         if (s)
                         {
-                            functionResolve(m, s, e.loc, sc, tiargs, e.e2.type, &args1);
+                            functionResolve(m, s, e.loc, sc, tiargs, e.e2.type, ArgumentList(args1));
                             if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                             {
                                 return ErrorExp.get();
@@ -810,7 +820,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         if (m.count > 1)
                         {
                             // Error, ambiguous
-                            e.error("overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
+                            error(e.loc, "overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
                         }
                         else if (m.last == MATCH.nomatch)
                         {
@@ -880,7 +890,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
             }
             if (rewrittenLhs)
             {
-                e.error("cannot use `alias this` to partially initialize variable `%s` of type `%s`. Use `%s`",
+                error(e.loc, "cannot use `alias this` to partially initialize variable `%s` of type `%s`. Use `%s`",
                         e.e1.toChars(), ad1.toChars(), rewrittenLhs.toChars());
                 return ErrorExp.get();
             }
@@ -908,7 +918,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
             if (t1.ty == Tclass && e.e2.op == EXP.null_ ||
                 t2.ty == Tclass && e.e1.op == EXP.null_)
             {
-                e.error("use `%s` instead of `%s` when comparing with `null`",
+                error(e.loc, "use `%s` instead of `%s` when comparing with `null`",
                     EXPtoString(e.op == EXP.equal ? EXP.identity : EXP.notIdentity).ptr,
                     EXPtoString(e.op).ptr);
                 return ErrorExp.get();
@@ -931,6 +941,12 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     /* Rewrite as:
                      *      .object.opEquals(e1, e2)
                      */
+                    if (!ClassDeclaration.object)
+                    {
+                        error(e.loc, "cannot compare classes for equality because `object.Object` was not declared");
+                        return null;
+                    }
+
                     Expression e1x = e.e1;
                     Expression e2x = e.e2;
 
@@ -990,7 +1006,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     return null;
 
                 import dmd.clone : needOpEquals;
-                if (!global.params.fieldwise && !needOpEquals(sd))
+                if (global.params.fieldwise != FeatureState.enabled && !needOpEquals(sd))
                 {
                     // Use bitwise equality.
                     auto op2 = e.op == EXP.equal ? EXP.identity : EXP.notIdentity;
@@ -1009,12 +1025,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                  * also compare the parent class's equality. Otherwise, compares
                  * the identity of parent context through void*.
                  */
-                if (e.att1 && t1.equivalent(e.att1)) return null;
-                if (e.att2 && t2.equivalent(e.att2)) return null;
-
                 e = e.copy().isEqualExp();
-                if (!e.att1) e.att1 = t1;
-                if (!e.att2) e.att2 = t2;
                 e.e1 = new DotIdExp(e.loc, e.e1, Id._tupleof);
                 e.e2 = new DotIdExp(e.loc, e.e2, Id._tupleof);
 
@@ -1022,18 +1033,6 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 sc2.flags |= SCOPE.noaccesscheck;
                 Expression r = e.expressionSemantic(sc2);
                 sc2.pop();
-
-                /* https://issues.dlang.org/show_bug.cgi?id=15292
-                 * if the rewrite result is same with the original,
-                 * the equality is unresolvable because it has recursive definition.
-                 */
-                if (r.op == e.op &&
-                    r.isEqualExp().e1.type.toBasetype() == t1)
-                {
-                    e.error("cannot compare `%s` because its auto generated member-wise equality has recursive definition",
-                        t1.toChars());
-                    return ErrorExp.get();
-                }
                 return r;
             }
 
@@ -1046,7 +1045,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 size_t dim = tup1.exps.length;
                 if (dim != tup2.exps.length)
                 {
-                    e.error("mismatched tuple lengths, `%d` and `%d`",
+                    error(e.loc, "mismatched sequence lengths, `%d` and `%d`",
                         cast(int)dim, cast(int)tup2.exps.length);
                     return ErrorExp.get();
                 }
@@ -1064,8 +1063,6 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         auto ex1 = (*tup1.exps)[i];
                         auto ex2 = (*tup2.exps)[i];
                         auto eeq = new EqualExp(e.op, e.loc, ex1, ex2);
-                        eeq.att1 = e.att1;
-                        eeq.att2 = e.att2;
 
                         if (!result)
                             result = eeq;
@@ -1107,6 +1104,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 {
                     ie = (*ae.arguments)[0].isIntervalExp();
                 }
+                Type att = null; // first cyclic `alias this` type
                 while (true)
                 {
                     if (ae.e1.op == EXP.error)
@@ -1178,7 +1176,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                         return result;
                     }
                     // Didn't find it. Forward to aliasthis
-                    if (ad.aliasthis && !isRecursiveAliasThis(ae.att1, ae.e1.type))
+                    if (ad.aliasthis && !isRecursiveAliasThis(att, ae.e1.type))
                     {
                         /* Rewrite (a[arguments] op= e2) as:
                          *      a.aliasthis[arguments] op= e2
@@ -1201,7 +1199,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 return ErrorExp.get();
             }
             Identifier id = opId(e);
-            Expressions args2;
+            Expressions* args2 = new Expressions();
             AggregateDeclaration ad1 = isAggregate(e.e1.type);
             Dsymbol s = null;
             Objects* tiargs = null;
@@ -1212,7 +1210,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 s = search_function(ad1, Id.opOpAssign);
                 if (s && !s.isTemplateDeclaration())
                 {
-                    e.error("`%s.opOpAssign` isn't a template", e.e1.toChars());
+                    error(e.loc, "`%s.opOpAssign` isn't a template", e.e1.toChars());
                     return ErrorExp.get();
                 }
             }
@@ -1233,7 +1231,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                     // Deprecated in 2.088, made an error in 2.100
                     scope char[] op = EXPtoString(e.op).dup;
                     op[$-1] = '\0'; // remove trailing `=`
-                    e.error("`%s` is obsolete.  Use `opOpAssign(string op)(...) if (op == \"%s\")` instead.", id.toChars(), op.ptr);
+                    error(e.loc, "`%s` is obsolete.  Use `opOpAssign(string op)(...) if (op == \"%s\")` instead.", id.toChars(), op.ptr);
                     return ErrorExp.get();
                 }
             }
@@ -1244,10 +1242,10 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                  *      a.opOpAssign(b)
                  */
                 args2.setDim(1);
-                args2[0] = e.e2;
-                expandTuples(&args2);
+                (*args2)[0] = e.e2;
+                expandTuples(args2);
                 MatchAccumulator m;
-                functionResolve(m, s, e.loc, sc, tiargs, e.e1.type, &args2);
+                functionResolve(m, s, e.loc, sc, tiargs, e.e1.type, ArgumentList(args2));
                 if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                 {
                     return ErrorExp.get();
@@ -1255,7 +1253,7 @@ Expression op_overload(Expression e, Scope* sc, EXP* pop = null)
                 if (m.count > 1)
                 {
                     // Error, ambiguous
-                    e.error("overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
+                    error(e.loc, "overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
                 }
                 else if (m.last == MATCH.nomatch)
                 {
@@ -1326,12 +1324,12 @@ private Expression compare_overload(BinExp e, Scope* sc, Identifier id, EXP* pop
          *      b.opEquals(a)
          * and see which is better.
          */
-        Expressions args1 = Expressions(1);
-        args1[0] = e.e1;
-        expandTuples(&args1);
-        Expressions args2 = Expressions(1);
-        args2[0] = e.e2;
-        expandTuples(&args2);
+        Expressions* args1 = new Expressions(1);
+        (*args1)[0] = e.e1;
+        expandTuples(args1);
+        Expressions* args2 = new Expressions(1);
+        (*args2)[0] = e.e2;
+        expandTuples(args2);
         MatchAccumulator m;
         if (0 && s && s_r)
         {
@@ -1340,7 +1338,7 @@ private Expression compare_overload(BinExp e, Scope* sc, Identifier id, EXP* pop
         }
         if (s)
         {
-            functionResolve(m, s, e.loc, sc, tiargs, e.e1.type, &args2);
+            functionResolve(m, s, e.loc, sc, tiargs, e.e1.type, ArgumentList(args2));
             if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                 return ErrorExp.get();
         }
@@ -1348,7 +1346,7 @@ private Expression compare_overload(BinExp e, Scope* sc, Identifier id, EXP* pop
         int count = m.count;
         if (s_r)
         {
-            functionResolve(m, s_r, e.loc, sc, tiargs, e.e2.type, &args1);
+            functionResolve(m, s_r, e.loc, sc, tiargs, e.e2.type, ArgumentList(args1));
             if (m.lastf && (m.lastf.errors || m.lastf.hasSemantic3Errors()))
                 return ErrorExp.get();
         }
@@ -1368,7 +1366,7 @@ private Expression compare_overload(BinExp e, Scope* sc, Identifier id, EXP* pop
             if (!(m.lastf == lastf && m.count == 2 && count == 1))
             {
                 // Error, ambiguous
-                e.error("overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
+                error(e.loc, "overloads `%s` and `%s` both match argument list for `%s`", m.lastf.type.toChars(), m.nextf.type.toChars(), m.lastf.toChars());
             }
         }
         else if (m.last == MATCH.nomatch)
@@ -1739,7 +1737,10 @@ private FuncDeclaration findBestOpApplyMatch(Expression ethis, FuncDeclaration f
 
             // Found another overload with different attributes?
             // e.g. @system vs. @safe opApply
-            bool ambig = tf.attributesEqual(bestTf);
+            // @@@DEPRECATED_2.112@@@
+            // See semantic2.d Semantic2Visitor.visit(FuncDeclaration):
+            // Remove `false` after deprecation period is over.
+            bool ambig = tf.attributesEqual(bestTf, false);
 
             // opApplies with identical attributes could still accept
             // different function bodies as delegate
@@ -1766,10 +1767,10 @@ private FuncDeclaration findBestOpApplyMatch(Expression ethis, FuncDeclaration f
 
     if (fd_ambig)
     {
-        .error(ethis.loc, "`%s.%s` matches more than one declaration:\n`%s`:     `%s`\nand:\n`%s`:     `%s`",
-            ethis.toChars(), fstart.ident.toChars(),
-            fd_best.loc.toChars(), fd_best.type.toChars(),
-            fd_ambig.loc.toChars(), fd_ambig.type.toChars());
+        .error(ethis.loc, "`%s.%s` matches more than one declaration:",
+            ethis.toChars(), fstart.ident.toChars());
+        .errorSupplemental(fd_best.loc, "`%s`\nand:", fd_best.type.toChars());
+        .errorSupplemental(fd_ambig.loc, "`%s`", fd_ambig.type.toChars());
         return null;
     }
 
@@ -1839,7 +1840,7 @@ private bool matchParamsToOpApply(TypeFunction tf, Parameters* parameters, bool 
  * Returns:
  *      reverse of op
  */
-private EXP reverseRelation(EXP op) pure
+private EXP reverseRelation(EXP op) pure @safe
 {
     switch (op)
     {

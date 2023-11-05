@@ -222,7 +222,6 @@ enum class aarch64_feature : unsigned char {
 #define AARCH64_ISA_MOPS	   (aarch64_isa_flags & AARCH64_FL_MOPS)
 #define AARCH64_ISA_LS64	   (aarch64_isa_flags & AARCH64_FL_LS64)
 #define AARCH64_ISA_CSSC	   (aarch64_isa_flags & AARCH64_FL_CSSC)
-#define AARCH64_ISA_RCPC           (aarch64_isa_flags & AARCH64_FL_RCPC)
 
 /* Crypto is an optional extension to AdvSIMD.  */
 #define TARGET_CRYPTO (AARCH64_ISA_CRYPTO)
@@ -292,7 +291,7 @@ enum class aarch64_feature : unsigned char {
 #define TARGET_RNG (AARCH64_ISA_RNG)
 
 /* Memory Tagging instructions optional to Armv8.5 enabled through +memtag.  */
-#define TARGET_MEMTAG (AARCH64_ISA_V8_5A && AARCH64_ISA_MEMTAG)
+#define TARGET_MEMTAG (AARCH64_ISA_MEMTAG)
 
 /* I8MM instructions are enabled through +i8mm.  */
 #define TARGET_I8MM (AARCH64_ISA_I8MM)
@@ -763,10 +762,20 @@ extern enum aarch64_processor aarch64_tune;
 
 #define DEFAULT_PCC_STRUCT_RETURN 0
 
-#ifdef HAVE_POLY_INT_H
+#if defined(HAVE_POLY_INT_H) && defined(GCC_VEC_H)
 struct GTY (()) aarch64_frame
 {
+  /* The offset from the bottom of the static frame (the bottom of the
+     outgoing arguments) of each register save slot, or -2 if no save is
+     needed.  */
   poly_int64 reg_offset[LAST_SAVED_REGNUM + 1];
+
+  /* The list of GPRs, FPRs and predicate registers that have nonnegative
+     entries in reg_offset.  The registers are listed in order of
+     increasing offset (rather than increasing register number).  */
+  vec<unsigned, va_gc_atomic> *saved_gprs;
+  vec<unsigned, va_gc_atomic> *saved_fprs;
+  vec<unsigned, va_gc_atomic> *saved_prs;
 
   /* The number of extra stack bytes taken up by register varargs.
      This area is allocated by the callee at the very top of the
@@ -774,25 +783,28 @@ struct GTY (()) aarch64_frame
      STACK_BOUNDARY.  */
   HOST_WIDE_INT saved_varargs_size;
 
-  /* The size of the callee-save registers with a slot in REG_OFFSET.  */
-  poly_int64 saved_regs_size;
+  /* The number of bytes between the bottom of the static frame (the bottom
+     of the outgoing arguments) and the bottom of the register save area.
+     This value is always a multiple of STACK_BOUNDARY.  */
+  poly_int64 bytes_below_saved_regs;
 
-  /* The size of the callee-save registers with a slot in REG_OFFSET that
-     are saved below the hard frame pointer.  */
-  poly_int64 below_hard_fp_saved_regs_size;
+  /* The number of bytes between the bottom of the static frame (the bottom
+     of the outgoing arguments) and the hard frame pointer.  This value is
+     always a multiple of STACK_BOUNDARY.  */
+  poly_int64 bytes_below_hard_fp;
 
-  /* Offset from the base of the frame (incomming SP) to the
-     top of the locals area.  This value is always a multiple of
+  /* The number of bytes between the top of the locals area and the top
+     of the frame (the incomming SP).  This value is always a multiple of
      STACK_BOUNDARY.  */
-  poly_int64 locals_offset;
+  poly_int64 bytes_above_locals;
 
-  /* Offset from the base of the frame (incomming SP) to the
-     hard_frame_pointer.  This value is always a multiple of
+  /* The number of bytes between the hard_frame_pointer and the top of
+     the frame (the incomming SP).  This value is always a multiple of
      STACK_BOUNDARY.  */
-  poly_int64 hard_fp_offset;
+  poly_int64 bytes_above_hard_fp;
 
-  /* The size of the frame.  This value is the offset from base of the
-     frame (incomming SP) to the stack_pointer.  This value is always
+  /* The size of the frame, i.e. the number of bytes between the bottom
+     of the outgoing arguments and the incoming SP.  This value is always
      a multiple of STACK_BOUNDARY.  */
   poly_int64 frame_size;
 
@@ -802,10 +814,6 @@ struct GTY (()) aarch64_frame
   /* The writeback value when pushing callee-save registers.
      It is zero when no push is used.  */
   HOST_WIDE_INT callee_adjust;
-
-  /* The offset from SP to the callee-save registers after initial_adjust.
-     It may be non-zero if no push is used (ie. callee_adjust == 0).  */
-  poly_int64 callee_offset;
 
   /* The size of the stack adjustment before saving or after restoring
      SVE registers.  */
@@ -854,12 +862,21 @@ struct GTY (()) aarch64_frame
      This is the register they should use.  */
   unsigned spare_pred_reg;
 
+  /* An SVE register that is saved below the hard frame pointer and that acts
+     as a probe for later allocations, or INVALID_REGNUM if none.  */
+  unsigned sve_save_and_probe;
+
+  /* A register that is saved at the hard frame pointer and that acts
+     as a probe for later allocations, or INVALID_REGNUM if none.  */
+  unsigned hard_fp_save_and_probe;
+
   bool laid_out;
 
   /* True if shadow call stack should be enabled for the current function.  */
   bool is_scs_enabled;
 };
 
+#ifdef hash_set_h
 typedef struct GTY (()) machine_function
 {
   struct aarch64_frame frame;
@@ -868,7 +885,11 @@ typedef struct GTY (()) machine_function
   /* One entry for each general purpose register.  */
   rtx call_via[SP_REGNUM];
   bool label_is_assembled;
+  /* A set of all decls that have been passed to a vld1 intrinsic in the
+     current function.  This is used to help guide the vector cost model.  */
+  hash_set<tree> *vector_load_decls;
 } machine_function;
+#endif
 #endif
 
 /* Which ABI to use.  */
@@ -1237,9 +1258,8 @@ extern const char *aarch64_rewrite_mcpu (int argc, const char **argv);
 extern GTY(()) tree aarch64_fp16_type_node;
 extern GTY(()) tree aarch64_fp16_ptr_type_node;
 
-/* This type is the user-visible __bf16, and a pointer to that type.  Defined
-   in aarch64-builtins.cc.  */
-extern GTY(()) tree aarch64_bf16_type_node;
+/* Pointer to the user-visible __bf16 type.  __bf16 itself is generic
+   bfloat16_type_node.  Defined in aarch64-builtins.cc.  */
 extern GTY(()) tree aarch64_bf16_ptr_type_node;
 
 /* The generic unwind code in libgcc does not initialize the frame pointer.
@@ -1287,5 +1307,15 @@ extern poly_uint16 aarch64_sve_vg;
     ? ROUND_UP (STACK_CLASH_MIN_BYTES_OUTGOING_ARGS,       \
 		STACK_BOUNDARY / BITS_PER_UNIT)		   \
     : (crtl->outgoing_args_size + STACK_POINTER_OFFSET))
+
+/* Filled in by aarch64_adjust_reg_alloc_order, which is called before
+   the first relevant use.  */
+#define REG_ALLOC_ORDER {}
+#define ADJUST_REG_ALLOC_ORDER aarch64_adjust_reg_alloc_order ()
+
+#define AARCH64_VALID_SHRN_OP(T,S)			\
+((T) == TRUNCATE					\
+ || ((T) == US_TRUNCATE && (S) == LSHIFTRT)		\
+ || ((T) == SS_TRUNCATE && (S) == ASHIFTRT))
 
 #endif /* GCC_AARCH64_H */

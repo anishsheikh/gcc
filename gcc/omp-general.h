@@ -23,6 +23,7 @@ along with GCC; see the file COPYING3.  If not see
 #define GCC_OMP_GENERAL_H
 
 #include "gomp-constants.h"
+#include "omp-api.h"
 
 /*  Flags for an OpenACC loop.  */
 
@@ -137,7 +138,7 @@ enum omp_requires {
 
 extern GTY(()) enum omp_requires omp_requires_mask;
 
-static inline dump_flags_t
+inline dump_flags_t
 get_openacc_privatization_dump_flags ()
 {
   dump_flags_t l_dump_flags = MSG_NOTE;

@@ -149,7 +149,8 @@ PROCEDURE BuildStartFunctionDeclaration (uses_varargs: BOOLEAN) ;
 
 PROCEDURE BuildEndFunctionDeclaration (location_begin, location_end: location_t;
                                        name: ADDRESS; returntype: Tree;
-                                       isexternal, isnested, ispublic: BOOLEAN) : Tree ;
+                                       isexternal, isnested, ispublic,
+                                       isnoreturn: BOOLEAN) : Tree ;
 
 
 (*
@@ -160,16 +161,6 @@ PROCEDURE RememberVariables (l: Tree) ;
 
 
 (*
-    DetermineSizeOfConstant - given, str, and, base, fill in
-                              needsLong and needsUnsigned appropriately.
-*)
-
-PROCEDURE DetermineSizeOfConstant (location: location_t;
-                                   str: ADDRESS; base: CARDINAL;
-                                   VAR needsLong, needsUnsigned: BOOLEAN) ;
-
-
-(*
     BuildConstLiteralNumber - returns a GCC TREE built from the string, str.
                               It assumes that, str, represents a legal
                               number in Modula-2. It always returns a
@@ -177,7 +168,8 @@ PROCEDURE DetermineSizeOfConstant (location: location_t;
 *)
 
 PROCEDURE BuildConstLiteralNumber (location: location_t;
-                                   str: ADDRESS; base: CARDINAL) : Tree ;
+                                   str: ADDRESS; base: CARDINAL;
+                                   issueError: BOOLEAN) : Tree ;
 
 
 (*

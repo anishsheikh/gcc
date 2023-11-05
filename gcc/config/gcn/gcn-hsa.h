@@ -75,19 +75,24 @@ extern unsigned int gcn_local_sym_hash (const char *name);
    supported for gcn.  */
 #define GOMP_SELF_SPECS ""
 
-#define NO_XNACK "!march=*:;march=fiji:;"
+#define NO_XNACK "!march=*:;march=fiji:;march=gfx1030:;"
 #define NO_SRAM_ECC "!march=*:;march=fiji:;march=gfx900:;march=gfx906:;"
 
 /* In HSACOv4 no attribute setting means the binary supports "any" hardware
    configuration.  The name of the attribute also changed.  */
 #define SRAMOPT "msram-ecc=on:-mattr=+sramecc;msram-ecc=off:-mattr=-sramecc"
 
+/* Replace once XNACK is supported:
+   #define XNACKOPT "mxnack=on:-mattr=+xnack;mxnack=off:-mattr=-xnack"  */
+#define XNACKOPT "!mnack=*:-mattr=-xnack;mnack=*:-mattr=-xnack"
+
 /* Use LLVM assembler and linker options.  */
 #define ASM_SPEC  "-triple=amdgcn--amdhsa "  \
 		  "%:last_arg(%{march=*:-mcpu=%*}) " \
 		  "%{!march=*|march=fiji:--amdhsa-code-object-version=3} " \
-		  "%{" NO_XNACK "mxnack:-mattr=+xnack;:-mattr=-xnack} " \
+		  "%{" NO_XNACK XNACKOPT "}" \
 		  "%{" NO_SRAM_ECC SRAMOPT "} " \
+		  "%{march=gfx1030:-mattr=+wavefrontsize64} " \
 		  "-filetype=obj"
 #define LINK_SPEC "--pie --export-dynamic"
 #define LIB_SPEC  "-lc"

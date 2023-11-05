@@ -967,7 +967,7 @@ gfc_copy_array_spec (gfc_array_spec *src)
 
 
 /* Returns nonzero if the two expressions are equal.
-   We should not need to support more than constant values, as that’s what is
+   We should not need to support more than constant values, as that's what is
    allowed in derived type component array spec.  However, we may create types
    with non-constant array spec for dummy variable class container types, for
    which the _data component holds the array spec of the variable declaration.
@@ -979,7 +979,7 @@ compare_bounds (gfc_expr *bound1, gfc_expr *bound2)
   if (bound1 == NULL || bound2 == NULL
       || bound1->ts.type != BT_INTEGER
       || bound2->ts.type != BT_INTEGER)
-    gfc_internal_error ("gfc_compare_array_spec(): Array spec clobbered");
+    return false;
 
   /* What qualifies as identical bounds?  We could probably just check that the
      expressions are exact clones.  We avoid rewriting a specific comparison
@@ -994,7 +994,7 @@ compare_bounds (gfc_expr *bound1, gfc_expr *bound2)
 /* Compares two array specifications.  They must be constant or deferred
    shape.  */
 
-int
+bool
 gfc_compare_array_spec (gfc_array_spec *as1, gfc_array_spec *as2)
 {
   int i;
@@ -1039,7 +1039,7 @@ gfc_compare_array_spec (gfc_array_spec *as1, gfc_array_spec *as2)
    use the symbol as an implied-DO iterator.  Returns nonzero if a
    duplicate was found.  */
 
-static int
+static bool
 check_duplicate_iterator (gfc_constructor_base base, gfc_symbol *master)
 {
   gfc_constructor *c;
@@ -1982,7 +1982,7 @@ is_constant_element (gfc_expr *e)
    i=1,100000000) /) will take a while as* opposed to a more clever
    function that traverses the expression tree. FIXME.  */
 
-int
+bool
 gfc_constant_ac (gfc_expr *e)
 {
   expand_info expand_save;
@@ -2005,7 +2005,7 @@ gfc_constant_ac (gfc_expr *e)
 /* Returns nonzero if an array constructor has been completely
    expanded (no iterators) and zero if iterators are present.  */
 
-int
+bool
 gfc_expanded_ac (gfc_expr *e)
 {
   gfc_constructor *c;

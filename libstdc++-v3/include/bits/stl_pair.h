@@ -63,8 +63,11 @@
 #endif
 #if __cplusplus >= 202002L
 # include <compare>
-# define __cpp_lib_constexpr_utility 201811L
 #endif
+
+#define __glibcxx_want_constexpr_utility
+#define __glibcxx_want_tuples_by_type
+#include <bits/version.h>
 
 namespace std _GLIBCXX_VISIBILITY(default)
 {
@@ -281,6 +284,21 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	    return is_convertible_v<_U2, _T2>;
 	  return false;
 	}
+
+      // True if construction from _U1 and _U2 would create a dangling ref.
+      template<typename _U1, typename _U2>
+	static constexpr bool
+	_S_dangles()
+	{
+#if __has_builtin(__reference_constructs_from_temporary)
+	  if constexpr (__reference_constructs_from_temporary(_T1, _U1&&))
+	    return true;
+	  else
+	    return __reference_constructs_from_temporary(_T2, _U2&&);
+#else
+	  return false;
+#endif
+	}
       /// @endcond
 
     public:
@@ -295,25 +313,37 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
       /// Constructor accepting two values of arbitrary types
       template<typename _U1, typename _U2>
-	requires (_S_constructible<_U1, _U2>())
+	requires (_S_constructible<_U1, _U2>()) && (!_S_dangles<_U1, _U2>())
 	constexpr explicit(!_S_convertible<_U1, _U2>())
 	pair(_U1&& __x, _U2&& __y)
 	noexcept(_S_nothrow_constructible<_U1, _U2>())
 	: first(std::forward<_U1>(__x)), second(std::forward<_U2>(__y))
 	{ }
 
+      template<typename _U1, typename _U2>
+	requires (_S_constructible<_U1, _U2>()) && (_S_dangles<_U1, _U2>())
+	constexpr explicit(!_S_convertible<_U1, _U2>())
+	pair(_U1&&, _U2&&) = delete;
+
       /// Converting constructor from a const `pair<U1, U2>` lvalue
       template<typename _U1, typename _U2>
 	requires (_S_constructible<const _U1&, const _U2&>())
+	  && (!_S_dangles<_U1, _U2>())
 	constexpr explicit(!_S_convertible<const _U1&, const _U2&>())
 	pair(const pair<_U1, _U2>& __p)
 	noexcept(_S_nothrow_constructible<const _U1&, const _U2&>())
 	: first(__p.first), second(__p.second)
 	{ }
 
+      template<typename _U1, typename _U2>
+	requires (_S_constructible<const _U1&, const _U2&>())
+	      && (_S_dangles<const _U1&, const _U2&>())
+	constexpr explicit(!_S_convertible<const _U1&, const _U2&>())
+	pair(const pair<_U1, _U2>&) = delete;
+
       /// Converting constructor from a non-const `pair<U1, U2>` rvalue
       template<typename _U1, typename _U2>
-	requires (_S_constructible<_U1, _U2>())
+	requires (_S_constructible<_U1, _U2>()) && (!_S_dangles<_U1, _U2>())
 	constexpr explicit(!_S_convertible<_U1, _U2>())
 	pair(pair<_U1, _U2>&& __p)
 	noexcept(_S_nothrow_constructible<_U1, _U2>())
@@ -321,25 +351,42 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	  second(std::forward<_U2>(__p.second))
 	{ }
 
+      template<typename _U1, typename _U2>
+	requires (_S_constructible<_U1, _U2>()) && (_S_dangles<_U1, _U2>())
+	constexpr explicit(!_S_convertible<_U1, _U2>())
+	pair(pair<_U1, _U2>&&) = delete;
+
 #if __cplusplus > 202002L
       /// Converting constructor from a non-const `pair<U1, U2>` lvalue
       template<typename _U1, typename _U2>
-	requires (_S_constructible<_U1&, _U2&>())
+	requires (_S_constructible<_U1&, _U2&>()) && (!_S_dangles<_U1&, _U2&>())
 	constexpr explicit(!_S_convertible<_U1&, _U2&>())
 	pair(pair<_U1, _U2>& __p)
 	noexcept(_S_nothrow_constructible<_U1&, _U2&>())
 	: first(__p.first), second(__p.second)
 	{ }
 
+      template<typename _U1, typename _U2>
+	requires (_S_constructible<_U1&, _U2&>()) && (_S_dangles<_U1&, _U2&>())
+	constexpr explicit(!_S_convertible<_U1&, _U2&>())
+	pair(pair<_U1, _U2>&) = delete;
+
       /// Converting constructor from a const `pair<U1, U2>` rvalue
       template<typename _U1, typename _U2>
 	requires (_S_constructible<const _U1, const _U2>())
+	  && (!_S_dangles<const _U1, const _U2>())
 	constexpr explicit(!_S_convertible<const _U1, const _U2>())
 	pair(const pair<_U1, _U2>&& __p)
 	noexcept(_S_nothrow_constructible<const _U1, const _U2>())
 	: first(std::forward<const _U1>(__p.first)),
 	  second(std::forward<const _U2>(__p.second))
 	{ }
+
+      template<typename _U1, typename _U2>
+	requires (_S_constructible<const _U1, const _U2>())
+	  && (_S_dangles<const _U1, const _U2>())
+	constexpr explicit(!_S_convertible<const _U1, const _U2>())
+	pair(const pair<_U1, _U2>&&) = delete;
 #endif // C++23
 
   private:
@@ -463,6 +510,19 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 #else // !__cpp_lib_concepts
       // C++11/14/17 implementation using enable_if, partially constexpr.
 
+      /// @cond undocumented
+      // Error if construction from _U1 and _U2 would create a dangling ref.
+#if __has_builtin(__reference_constructs_from_temporary) \
+      && defined _GLIBCXX_DEBUG
+# define __glibcxx_no_dangling_refs(_U1, _U2) \
+  static_assert(!__reference_constructs_from_temporary(_T1, _U1) \
+	       && !__reference_constructs_from_temporary(_T2, _U2), \
+		"std::pair constructor creates a dangling reference")
+#else
+# define __glibcxx_no_dangling_refs(_U1, _U2)
+#endif
+      /// @endcond
+
       /** The default constructor creates @c first and @c second using their
        *  respective default constructors.  */
       template <typename _U1 = _T1,
@@ -525,8 +585,9 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	                 && _PCCFP<_U1, _U2>::template
 			   _ImplicitlyConvertiblePair<_U1, _U2>(),
 			  bool>::type=true>
-        constexpr pair(const pair<_U1, _U2>& __p)
-        : first(__p.first), second(__p.second) { }
+	constexpr pair(const pair<_U1, _U2>& __p)
+	: first(__p.first), second(__p.second)
+	{ __glibcxx_no_dangling_refs(const _U1&, const _U2&); }
 
       template<typename _U1, typename _U2, typename
 	       enable_if<_PCCFP<_U1, _U2>::template
@@ -535,7 +596,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 			   _ImplicitlyConvertiblePair<_U1, _U2>(),
                          bool>::type=false>
 	explicit constexpr pair(const pair<_U1, _U2>& __p)
-	: first(__p.first), second(__p.second) { }
+	: first(__p.first), second(__p.second)
+	{ __glibcxx_no_dangling_refs(const _U1&, const _U2&); }
 
 #if _GLIBCXX_USE_DEPRECATED
 #if defined(__DEPRECATED)
@@ -575,7 +637,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	_GLIBCXX_DEPRECATED_PAIR_CTOR
 	constexpr
 	pair(_U1&& __x, __zero_as_null_pointer_constant, ...)
-	: first(std::forward<_U1>(__x)), second(nullptr) { }
+	: first(std::forward<_U1>(__x)), second(nullptr)
+	{ __glibcxx_no_dangling_refs(_U1&&, std::nullptr_t); }
 
       template<typename _U1,
 	       __enable_if_t<__and_<__not_<is_reference<_U1>>,
@@ -587,7 +650,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	_GLIBCXX_DEPRECATED_PAIR_CTOR
 	explicit constexpr
 	pair(_U1&& __x, __zero_as_null_pointer_constant, ...)
-	: first(std::forward<_U1>(__x)), second(nullptr) { }
+	: first(std::forward<_U1>(__x)), second(nullptr)
+	{ __glibcxx_no_dangling_refs(_U1&&, std::nullptr_t); }
 
       template<typename _U2,
 	       __enable_if_t<__and_<is_pointer<_T1>,
@@ -599,7 +663,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	_GLIBCXX_DEPRECATED_PAIR_CTOR
 	constexpr
 	pair(__zero_as_null_pointer_constant, _U2&& __y, ...)
-	: first(nullptr), second(std::forward<_U2>(__y)) { }
+	: first(nullptr), second(std::forward<_U2>(__y))
+	{ __glibcxx_no_dangling_refs(std::nullptr_t, _U2&&); }
 
       template<typename _U2,
 	       __enable_if_t<__and_<is_pointer<_T1>,
@@ -611,7 +676,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	_GLIBCXX_DEPRECATED_PAIR_CTOR
 	explicit constexpr
 	pair(__zero_as_null_pointer_constant, _U2&& __y, ...)
-	: first(nullptr), second(std::forward<_U2>(__y)) { }
+	: first(nullptr), second(std::forward<_U2>(__y))
+	{ __glibcxx_no_dangling_refs(std::nullptr_t, _U2&&); }
 #undef _GLIBCXX_DEPRECATED_PAIR_CTOR
 #endif
 
@@ -622,7 +688,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 			   _ImplicitlyMoveConvertiblePair<_U1, _U2>(),
                          bool>::type=true>
 	constexpr pair(_U1&& __x, _U2&& __y)
-	: first(std::forward<_U1>(__x)), second(std::forward<_U2>(__y)) { }
+	: first(std::forward<_U1>(__x)), second(std::forward<_U2>(__y))
+	{ __glibcxx_no_dangling_refs(_U1&&, _U2&&); }
 
       template<typename _U1, typename _U2, typename
 	       enable_if<_PCCP::template
@@ -631,7 +698,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 			   _ImplicitlyMoveConvertiblePair<_U1, _U2>(),
                          bool>::type=false>
 	explicit constexpr pair(_U1&& __x, _U2&& __y)
-	: first(std::forward<_U1>(__x)), second(std::forward<_U2>(__y)) { }
+	: first(std::forward<_U1>(__x)), second(std::forward<_U2>(__y))
+	{ __glibcxx_no_dangling_refs(_U1&&, _U2&&); }
 
 
       template<typename _U1, typename _U2, typename
@@ -642,7 +710,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
                          bool>::type=true>
 	constexpr pair(pair<_U1, _U2>&& __p)
 	: first(std::forward<_U1>(__p.first)),
-	  second(std::forward<_U2>(__p.second)) { }
+	  second(std::forward<_U2>(__p.second))
+	{ __glibcxx_no_dangling_refs(_U1&&, _U2&&); }
 
       template<typename _U1, typename _U2, typename
 	       enable_if<_PCCFP<_U1, _U2>::template
@@ -652,7 +721,10 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
                          bool>::type=false>
 	explicit constexpr pair(pair<_U1, _U2>&& __p)
 	: first(std::forward<_U1>(__p.first)),
-	  second(std::forward<_U2>(__p.second)) { }
+	  second(std::forward<_U2>(__p.second))
+	{ __glibcxx_no_dangling_refs(_U1&&, _U2&&); }
+
+#undef __glibcxx_no_dangling_refs
 
       pair&
       operator=(__conditional_t<__and_<is_copy_assignable<_T1>,
@@ -714,7 +786,20 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       /// Templated constructor to convert from other pairs.
       template<typename _U1, typename _U2>
 	pair(const pair<_U1, _U2>& __p)
-	: first(__p.first), second(__p.second) { }
+	: first(__p.first), second(__p.second)
+	{
+#if __has_builtin(__reference_constructs_from_temporary)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-local-typedefs"
+	  typedef int _DanglingCheck1[
+	    __reference_constructs_from_temporary(_T1, const _U1&) ? -1 : 1
+		      ];
+	  typedef int _DanglingCheck2[
+	    __reference_constructs_from_temporary(_T2, const _U2&) ? -1 : 1
+		      ];
+#pragma GCC diagnostic pop
+#endif
+	}
 #endif // C++11
     };
 
@@ -968,10 +1053,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     get(const pair<_Tp1, _Tp2>&& __in) noexcept
     { return __pair_get<_Int>::__const_move_get(std::move(__in)); }
 
-#if __cplusplus >= 201402L
 
-#define __cpp_lib_tuples_by_type 201304L
-
+#ifdef __cpp_lib_tuples_by_type // C++ >= 14
   template <typename _Tp, typename _Up>
     constexpr _Tp&
     get(pair<_Tp, _Up>& __p) noexcept
@@ -1011,6 +1094,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     constexpr const _Tp&&
     get(const pair<_Up, _Tp>&& __p) noexcept
     { return std::move(__p.second); }
+#endif // __cpp_lib_tuples_by_type
+
 
 #if __cplusplus > 202002L
   template<typename _T1, typename _T2, typename _U1, typename _U2,
@@ -1029,7 +1114,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
   { using type = pair<common_type_t<_T1, _U1>, common_type_t<_T2, _U2>>; };
 #endif // C++23
 
-#endif // C++14
   /// @}
 #endif // C++11
 

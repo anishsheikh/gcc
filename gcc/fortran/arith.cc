@@ -778,7 +778,7 @@ gfc_arith_divide (gfc_expr *op1, gfc_expr *op2, gfc_expr **resultp)
 	    {
 	      char *p;
 	      p = mpz_get_str (NULL, 10, result->value.integer);
-	      gfc_warning_now (OPT_Winteger_division, "Integer division "
+	      gfc_warning (OPT_Winteger_division, "Integer division "
 			       "truncated to constant %qs at %L", p,
 			       &op1->where);
 	      free (p);
@@ -1034,7 +1034,7 @@ gfc_arith_concat (gfc_expr *op1, gfc_expr *op2, gfc_expr **resultp)
   size_t len;
 
   /* By cleverly playing around with constructors, it is possible
-     to get mismaching types here.  */
+     to get mismatching types here.  */
   if (op1->ts.type != BT_CHARACTER || op2->ts.type != BT_CHARACTER
       || op1->ts.kind != op2->ts.kind)
     return ARITH_WRONGCONCAT;
@@ -1118,6 +1118,11 @@ gfc_compare_expr (gfc_expr *op1, gfc_expr *op2, gfc_intrinsic_op op)
     case BT_LOGICAL:
       rc = ((!op1->value.logical && op2->value.logical)
 	    || (op1->value.logical && !op2->value.logical));
+      break;
+
+    case BT_COMPLEX:
+      gcc_assert (op == INTRINSIC_EQ);
+      rc = mpc_cmp (op1->value.complex, op2->value.complex);
       break;
 
     default:
@@ -1662,6 +1667,12 @@ eval_intrinsic (gfc_intrinsic_op op,
     case INTRINSIC_POWER:
       if (!gfc_numeric_ts (&op1->ts) || !gfc_numeric_ts (&op2->ts))
 	goto runtime;
+
+      /* Do not perform conversions if operands are not conformable as
+	 required for the binary intrinsic operators (F2018:10.1.5).
+	 Defer to a possibly overloading user-defined operator.  */
+      if (!gfc_op_rank_conformable (op1, op2))
+	    goto runtime;
 
       /* Insert any necessary type conversions to make the operands
 	 compatible.  */
@@ -2257,6 +2268,7 @@ gfc_real2int (gfc_expr *src, int kind)
 			   gfc_typename (&result->ts), &src->where);
 	  did_warn = true;
 	}
+      mpfr_clear (f);
     }
   if (!did_warn && warn_conversion_extra)
     {
@@ -2752,10 +2764,12 @@ gfc_hollerith2real (gfc_expr *src, int kind)
   result = gfc_get_constant_expr (BT_REAL, kind, &src->where);
 
   hollerith2representation (result, src);
-  gfc_interpret_float (kind, (unsigned char *) result->representation.string,
-		       result->representation.length, result->value.real);
-
-  return result;
+  if (gfc_interpret_float (kind,
+			   (unsigned char *) result->representation.string,
+			   result->representation.length, result->value.real))
+    return result;
+  else
+    return NULL;
 }
 
 /* Convert character to real.  The constant will be padded or truncated.  */

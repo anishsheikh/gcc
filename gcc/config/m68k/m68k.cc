@@ -158,7 +158,8 @@ static int m68k_sched_first_cycle_multipass_dfa_lookahead (void);
 
 static bool m68k_can_eliminate (const int, const int);
 static void m68k_conditional_register_usage (void);
-static bool m68k_legitimate_address_p (machine_mode, rtx, bool);
+static bool m68k_legitimate_address_p (machine_mode, rtx, bool,
+				       code_helper = ERROR_MARK);
 static void m68k_option_override (void);
 static void m68k_override_options_after_change (void);
 static rtx find_addr_reg (rtx);
@@ -2311,7 +2312,7 @@ m68k_decompose_address (machine_mode mode, rtx x,
    STRICT_P says whether strict checking is needed.  */
 
 bool
-m68k_legitimate_address_p (machine_mode mode, rtx x, bool strict_p)
+m68k_legitimate_address_p (machine_mode mode, rtx x, bool strict_p, code_helper)
 {
   struct m68k_address address;
 
@@ -2548,6 +2549,18 @@ m68k_adjust_decorated_operand (rtx op)
 	  iter.skip_subrtxes ();
 	}
     }
+}
+
+/* Prescan insn before outputing assembler for it.  */
+
+void
+m68k_final_prescan_insn (rtx_insn *insn ATTRIBUTE_UNUSED,
+			 rtx *operands, int n_operands)
+{
+  int i;
+
+  for (i = 0; i < n_operands; ++i)
+    m68k_adjust_decorated_operand (operands[i]);
 }
 
 /* Move X to a register and add REG_EQUAL note pointing to ORIG.
@@ -3658,6 +3671,7 @@ handle_move_double (rtx operands[2],
 
   /* Normal case: do the two words, low-numbered first.  */
 
+  m68k_final_prescan_insn (NULL, operands, 2);
   handle_movsi (operands);
 
   /* Do the middle one of the three words for long double */
@@ -3668,6 +3682,7 @@ handle_move_double (rtx operands[2],
       if (addreg1)
 	handle_reg_adjust (addreg1, 4);
 
+      m68k_final_prescan_insn (NULL, middlehalf, 2);
       handle_movsi (middlehalf);
     }
 
@@ -3678,6 +3693,7 @@ handle_move_double (rtx operands[2],
     handle_reg_adjust (addreg1, 4);
 
   /* Do that word.  */
+  m68k_final_prescan_insn (NULL, latehalf, 2);
   handle_movsi (latehalf);
 
   /* Undo the adds we just did.  */

@@ -332,8 +332,8 @@
 
 (define_expand "vector_copysign<mode>3"
   [(set (match_operand:VEC_F 0 "vfloat_operand")
-	(unspec:VEC_F [(match_operand:VEC_F 1 "vfloat_operand")
-		       (match_operand:VEC_F 2 "vfloat_operand")] UNSPEC_COPYSIGN))]
+	(copysign:VEC_F (match_operand:VEC_F 1 "vfloat_operand")
+			(match_operand:VEC_F 2 "vfloat_operand")))]
   "VECTOR_UNIT_ALTIVEC_OR_VSX_P (<MODE>mode)"
 {
   if (<MODE>mode == V4SFmode && VECTOR_UNIT_ALTIVEC_P (<MODE>mode))
@@ -1226,7 +1226,16 @@
 (define_expand "parity<mode>2"
   [(set (match_operand:VEC_IP 0 "register_operand")
 	(parity:VEC_IP (match_operand:VEC_IP 1 "register_operand")))]
-  "TARGET_P9_VECTOR")
+  "TARGET_P9_VECTOR"
+{
+  rtx op1 = gen_lowpart (V16QImode, operands[1]);
+  rtx res = gen_reg_rtx (V16QImode);
+  emit_insn (gen_popcountv16qi2 (res, op1));
+  emit_insn (gen_rs6000_vprtyb<mode>2 (operands[0],
+				       gen_lowpart (<MODE>mode, res)));
+
+  DONE;
+})
 
 
 ;; Same size conversions

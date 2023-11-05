@@ -3,7 +3,7 @@
  *
  * Not to be confused with the `scope` storage class.
  *
- * Copyright:   Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/dscope.d, _dscope.d)
@@ -29,10 +29,12 @@ import dmd.dsymbolsem;
 import dmd.dtemplate;
 import dmd.expression;
 import dmd.errors;
+import dmd.errorsink;
 import dmd.func;
 import dmd.globals;
 import dmd.id;
 import dmd.identifier;
+import dmd.location;
 import dmd.common.outbuffer;
 import dmd.root.rmem;
 import dmd.root.speller;
@@ -63,13 +65,14 @@ enum SCOPE
     free          = 0x8000,   /// is on free list
 
     fullinst      = 0x10000,  /// fully instantiate templates
+    ctfeBlock     = 0x20000,  /// inside a `if (__ctfe)` block
 }
 
 /// Flags that are carried along with a scope push()
 private enum PersistentFlags =
     SCOPE.contract | SCOPE.debug_ | SCOPE.ctfe | SCOPE.compile | SCOPE.constraint |
     SCOPE.noaccesscheck | SCOPE.ignoresymbolvisibility |
-    SCOPE.Cfile;
+    SCOPE.Cfile | SCOPE.ctfeBlock;
 
 extern (C++) struct Scope
 {
@@ -94,6 +97,7 @@ extern (C++) struct Scope
     bool inLoop;                    /// true if inside a loop (where constructor calls aren't allowed)
     int intypeof;                   /// in typeof(exp)
     VarDeclaration lastVar;         /// Previous symbol used to prevent goto-skips-init
+    ErrorSink eSink;                /// sink for error messages
 
     /* If  minst && !tinst, it's in definitely non-speculative scope (eg. module member scope).
      * If !minst && !tinst, it's in definitely speculative scope (eg. template constraint).
@@ -156,7 +160,7 @@ extern (C++) struct Scope
         return new Scope();
     }
 
-    extern (D) static Scope* createGlobal(Module _module)
+    extern (D) static Scope* createGlobal(Module _module, ErrorSink eSink)
     {
         Scope* sc = Scope.alloc();
         *sc = Scope.init;
@@ -164,6 +168,8 @@ extern (C++) struct Scope
         sc.minst = _module;
         sc.scopesym = new ScopeDsymbol();
         sc.scopesym.symtab = new DsymbolTable();
+        sc.eSink = eSink;
+        assert(eSink);
         // Add top level package as member of this global scope
         Dsymbol m = _module;
         while (m.parent)
@@ -271,6 +277,10 @@ extern (C++) struct Scope
              *   // To call x.toString in runtime, compiler should unspeculative S!int.
              *   assert(x.toString() == "instantiated");
              * }
+             *
+             * This results in an undefined reference to `RTInfoImpl`:
+             *  class C {  int a,b,c;   int* p,q; }
+             *  void test() {    C c = new C(); }
              */
             // If a template is instantiated from CT evaluated expression,
             // compiler can elide its code generation.
@@ -334,7 +344,7 @@ extern (C++) struct Scope
      * Returns:
      *  symbol if found, null if not
      */
-    extern (C++) Dsymbol search(const ref Loc loc, Identifier ident, Dsymbol* pscopesym, int flags = IgnoreNone)
+    extern (D) Dsymbol search(const ref Loc loc, Identifier ident, Dsymbol* pscopesym, int flags = IgnoreNone)
     {
         version (LOGSEARCH)
         {
@@ -469,12 +479,6 @@ extern (C++) struct Scope
                             s = *ps;
                         }
                     }
-                    if (!(flags & (SearchImportsOnly | IgnoreErrors)) &&
-                        ident == Id.length && sc.scopesym.isArrayScopeSymbol() &&
-                        sc.enclosing && sc.enclosing.search(loc, ident, null, flags))
-                    {
-                        warning(s.loc, "array `length` hides other `length` name in outer scope");
-                    }
                     //printMsg("\tfound local", s);
                     if (pscopesym)
                         *pscopesym = sc.scopesym;
@@ -608,7 +612,7 @@ extern (C++) struct Scope
      * Returns:
      *  innermost scope, null if none
      */
-    extern (D) Scope* inner() return
+    extern (D) Scope* inner() return @safe
     {
         for (Scope* sc = &this; sc; sc = sc.enclosing)
         {
@@ -664,7 +668,7 @@ extern (C++) struct Scope
     /********************************************
      * Search enclosing scopes for ScopeDsymbol.
      */
-    extern (D) ScopeDsymbol getScopesym()
+    extern (D) ScopeDsymbol getScopesym() @safe
     {
         for (Scope* sc = &this; sc; sc = sc.enclosing)
         {
@@ -677,7 +681,7 @@ extern (C++) struct Scope
     /********************************************
      * Search enclosing scopes for ClassDeclaration.
      */
-    extern (D) ClassDeclaration getClassScope()
+    extern (D) ClassDeclaration getClassScope() @safe
     {
         for (Scope* sc = &this; sc; sc = sc.enclosing)
         {
@@ -692,7 +696,7 @@ extern (C++) struct Scope
     /********************************************
      * Search enclosing scopes for ClassDeclaration or StructDeclaration.
      */
-    extern (D) AggregateDeclaration getStructClassScope()
+    extern (D) AggregateDeclaration getStructClassScope() @safe
     {
         for (Scope* sc = &this; sc; sc = sc.enclosing)
         {
@@ -736,7 +740,7 @@ extern (C++) struct Scope
      * where it was declared. So mark the Scope as not
      * to be free'd.
      */
-    extern (D) void setNoFree()
+    extern (D) void setNoFree() @safe
     {
         //int i = 0;
         //printf("Scope::setNoFree(this = %p)\n", this);
@@ -806,5 +810,15 @@ extern (C++) struct Scope
     extern (D) bool isFromSpeculativeSemanticContext() scope
     {
         return this.intypeof || this.flags & SCOPE.compile;
+    }
+
+
+    /**
+     * Returns: true if the code needs to go all the way through to code generation.
+     * This implies things like needing lowering to simpler forms.
+     */
+    extern (D) bool needsCodegen()
+    {
+        return (flags & (SCOPE.ctfe | SCOPE.ctfeBlock | SCOPE.compile)) == 0;
     }
 }

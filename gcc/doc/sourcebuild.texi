@@ -73,10 +73,10 @@ The runtime support library for atomic operations (e.g.@: for @code{__sync}
 and @code{__atomic}).
 
 @item libbacktrace
-A library that allows gcc to produce backtraces when it crashes.
+A library that allows GCC to produce backtraces when it crashes.
 
 @item libcc1
-A library that allows gdb to make use of the compiler.
+A library that allows GDB to make use of the compiler.
 
 @item libcody
 A compiler dynamism library to allow communication between compilers and
@@ -154,8 +154,7 @@ uncompressing GCC's intermediate language in LTO object files.
 The build system in the top level directory, including how recursion
 into subdirectories works and how building runtime libraries for
 multilibs is handled, is documented in a separate manual, included
-with GNU Binutils.  @xref{Top, , GNU configure and build system,
-configure, The GNU configure and build system}, for details.
+with GNU Binutils.
 
 @node gcc Directory
 @section The @file{gcc} Subdirectory
@@ -466,10 +465,6 @@ that of @samp{@@option} but for man page output a different effect is
 wanted.
 @item @@gccoptlist
 Use for summary lists of options in manuals.
-@item @@gol
-Use at the end of each line inside @samp{@@gccoptlist}.  This is
-necessary to avoid problems with differences in how the
-@samp{@@gccoptlist} macro is handled by different Texinfo formatters.
 @end table
 
 FIXME: describe the @file{texi2pod.pl} input language and magic
@@ -2191,9 +2186,19 @@ the Custom Datapath Extension (CDE) and floating-point (VFP).
 Some multilibs may be incompatible with these options.
 
 @item arm_v8_1m_main_cde_mve
-ARM target supports options to generate instructions from ARMv8.1-M with
+Arm target supports options to generate instructions from Armv8.1-M with
 the Custom Datapath Extension (CDE) and M-Profile Vector Extension (MVE).
 Some multilibs may be incompatible with these options.
+
+@item arm_v8_1m_main_cde_mve_fp
+Arm target supports options to generate instructions from Armv8.1-M
+with the Custom Datapath Extension (CDE) and M-Profile Vector
+Extension (MVE) with floating-point support.  Some multilibs may be
+incompatible with these options.
+
+@item arm_pacbti_hw
+Test system supports executing Pointer Authentication and Branch Target
+Identification instructions.
 
 @item arm_prefer_ldrd_strd
 ARM target prefers @code{LDRD} and @code{STRD} instructions over
@@ -2283,6 +2288,12 @@ executing the Armv8.1-M Mainline Low Overhead Loop instructions
 ARM target generates Thumb-2 code for @code{-mthumb} but does not
 support executing the Armv8.1-M Mainline Low Overhead Loop
 instructions @code{DLS} and @code{LE}.
+
+@item mbranch_protection_ok
+ARM target supporting @code{-mbranch-protection=standard}.
+
+@item arm_pacbti_hw
+Test system supports for executing non nop pacbti instructions.
 
 @end table
 
@@ -2460,6 +2471,18 @@ Test system has an integer register width of 64 bits.
 
 @end table
 
+@subsubsection CORE-V specific attributes
+
+@table @code
+
+@item cv_mac
+Test system has support for the CORE-V MAC extension.
+
+@item cv_alu
+Test system has support for the CORE-V ALU extension.
+
+@end table
+
 @subsubsection Other hardware attributes
 
 @c Please keep this table sorted alphabetically.
@@ -2500,6 +2523,9 @@ Target supports the execution of @code{avxneconvert} instructions.
 @item avxvnniint8
 Target supports the execution of @code{avxvnniint8} instructions.
 
+@item avxvnniint16
+Target supports the execution of @code{avxvnniint16} instructions.
+
 @item amx_tile
 Target supports the execution of @code{amx-tile} instructions.
 
@@ -2508,6 +2534,9 @@ Target supports the execution of @code{amx-int8} instructions.
 
 @item amx_bf16
 Target supports the execution of @code{amx-bf16} instructions.
+
+@item amx_complex
+Target supports the execution of @code{amx-complex} instructions.
 
 @item amx_fp16
 Target supports the execution of @code{amx-fp16} instructions.
@@ -2572,6 +2601,15 @@ Target supports the execution of @code{raoint} instructions.
 @item rdrand
 Target supports x86 @code{rdrand} instruction.
 
+@item sha512
+Target supports the execution of @code{sha512} instructions.
+
+@item sm3
+Target supports the execution of @code{sm3} instructions.
+
+@item sm4
+Target supports the execution of @code{sm4} instructions.
+
 @item sqrt_insn
 Target has a square root instruction that the compiler can generate.
 
@@ -2597,6 +2635,9 @@ Target supports atomic operations on @code{int} and @code{long}.
 Test environment appears to run executables on a simulator that
 accepts only @code{EM_SPARC} executables and chokes on @code{EM_SPARC32PLUS}
 or @code{EM_SPARCV9} executables.
+
+@item user_msr
+Target supports the execution of @code{user_msr} instructions.
 
 @item vect_cmdline_needed
 Target requires a command line argument to enable a SIMD instruction set.
@@ -2688,6 +2729,9 @@ Target supports Newlib.
 GCC was configured with @code{--enable-newlib-nano-formatted-io}, which reduces
 the code size of Newlib formatted I/O functions.
 
+@item posix_memalign
+Target supports @code{posix_memalign}.
+
 @item pow10
 Target provides @code{pow10} function.
 
@@ -2750,6 +2794,9 @@ Target is a VxWorks RTP.
 
 @item wchar
 Target supports wide characters.
+
+@item weak_undefined
+Target supports weak undefined symbols
 @end table
 
 @subsubsection Other attributes
@@ -2763,6 +2810,9 @@ Target supports automatic stack alignment.
 
 @item branch_cost
 Target supports @option{-branch-cost=N}.
+
+@item const_volatile_readonly_section
+Target places const volatile variables in readonly sections.
 
 @item cxa_atexit
 Target uses @code{__cxa_atexit}.
@@ -2835,6 +2885,9 @@ Target supports named sections.
 Target uses natural alignment (aligned to type size) for types of
 32 bits or less.
 
+@item tail_call
+Target supports tail-call optimizations.
+
 @item target_natural_alignment_64
 Target uses natural alignment (aligned to type size) for types of
 64 bits or less.
@@ -2893,6 +2946,10 @@ Target defaults to short enums.
 Target has limited stack size.  The stack size limit can be obtained using the
 STACK_SIZE macro defined by @ref{stack_size_ao,,@code{dg-add-options} feature
 @code{stack_size}}.
+
+Note that for certain targets, stack size limits are relevant for
+execution only, and therefore considered only if @code{dg-do run} is
+in effect, otherwise unlimited.
 
 @item static
 Target supports @option{-static}.
@@ -3118,6 +3175,9 @@ instructions, if any.
 
 @item tls
 Add the target-specific flags needed to use thread-local storage.
+
+@item weak_undefined
+Add the flags needed to enable support for weak undefined symbols.
 @end table
 
 @node Require Support
@@ -3286,9 +3346,12 @@ The first line of the expected output for a function @var{fn} has the form:
 Subsequent lines of the expected output also start with @var{prefix}.
 In both cases, whitespace after @var{prefix} is not significant.
 
-The test discards assembly directives such as @code{.cfi_startproc}
-and local label definitions such as @code{.LFB0} from the compiler's
-assembly output.  It then matches the result against the expected
+Depending on the configuration (see
+@code{configure_check-function-bodies} in
+@file{gcc/testsuite/lib/scanasm.exp}), the test may discard from the
+compiler's assembly output directives such as @code{.cfi_startproc},
+local label definitions such as @code{.LFB0}, and more.
+It then matches the result against the expected
 output for a function as a single regular expression.  This means that
 later lines can use backslashes to refer back to @samp{(@dots{})}
 captures on earlier lines.  For example:

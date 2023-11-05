@@ -1,3 +1,53 @@
+2023-10-22  Iain Sandoe  <iain@sandoe.co.uk>
+
+	* configure: Regenerate.
+	* configure.ac: Handle Darwin rpaths.
+
+2023-08-07  Nick Alcock  <nick.alcock@oracle.com>
+
+	* configure: Regenerate.
+
+2023-08-07  Alexander von Gluck IV  <kallisti5@unixzen.com>
+
+	* configure: Regenerate.
+
+2023-08-07  Nick Alcock  <nick.alcock@oracle.com>
+
+	* configure: Regenerate.
+
+2023-08-07  Nick Alcock  <nick.alcock@oracle.com>
+
+	* configure: Regenerate.
+
+2023-08-07  H.J. Lu  <hjl.tools@gmail.com>
+
+	* configure: Regenerate.
+
+2023-08-07  H.J. Lu  <hjl.tools@gmail.com>
+
+	* configure: Regenerate.
+
+2023-08-03  Richard Biener  <rguenther@suse.de>
+
+	* zstdtest.c (test_samples): Properly compute the allocation
+	size for the uncompressed data.
+
+2023-07-31  Ian Lance Taylor  <iant@golang.org>
+
+	* configure.ac: Check for _pgmptr declaration.
+	* fileline.c (fileline_initialize): Check for _pgmfptr before
+	/proc/self/exec.
+	* configure, config.h.in: Regenerate.
+
+2023-03-28  Ian Lance Taylor  <iant@golang.org>
+
+	* elf.c (elf_zstd_read_fse): Call elf_fetch_bits after reading
+	bits, not before.  Add unlikely for error case.
+	(elf_zstd_offset_table): Regenerate.
+	(elf_zstd_read_huff): Clear 13 entries in weight_mark, not 12.
+	(elf_zstd_read_literals): For a single stream adjust by
+	total_streams_size, not compressed_size.
+
 2023-01-20  Ian Lance Taylor  <iant@golang.org>
 
 	* dwarf.c (struct function_addrs): Change low and high fields to

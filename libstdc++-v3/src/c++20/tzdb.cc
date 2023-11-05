@@ -41,29 +41,24 @@
 # include <cstdlib>   // getenv
 #endif
 
-#ifndef __GTHREADS
-# define USE_ATOMIC_SHARED_PTR 0
-#elif _WIN32
-// std::mutex cannot be constinit, so Windows must use atomic<shared_ptr<>>.
-# define USE_ATOMIC_SHARED_PTR 1
-#elif ATOMIC_POINTER_LOCK_FREE < 2
-# define USE_ATOMIC_SHARED_PTR 0
-#else
-// TODO benchmark atomic<shared_ptr<>> vs mutex.
-# define USE_ATOMIC_SHARED_PTR 1
-#endif
-
 #if defined __GTHREADS && ATOMIC_POINTER_LOCK_FREE == 2
 # define USE_ATOMIC_LIST_HEAD 1
+// TODO benchmark atomic<shared_ptr<>> vs mutex.
+# define USE_ATOMIC_SHARED_PTR 1
 #else
 # define USE_ATOMIC_LIST_HEAD 0
+# define USE_ATOMIC_SHARED_PTR 0
+#endif
+
+#if USE_ATOMIC_SHARED_PTR && ! USE_ATOMIC_LIST_HEAD
+# error Unsupported combination
 #endif
 
 #if ! __cpp_constinit
 # if __has_cpp_attribute(clang::require_constant_initialization)
 #  define constinit [[clang::require_constant_initialization]]
-#else // YOLO
-# define constinit
+# else // YOLO
+#  define constinit
 # endif
 #endif
 
@@ -106,9 +101,18 @@ namespace std::chrono
     // Dummy no-op mutex type for single-threaded targets.
     struct mutex { void lock() { } void unlock() { } };
 #endif
-    /// XXX std::mutex::mutex() not constexpr on Windows, so can't be constinit
-    constinit mutex list_mutex;
+    inline mutex& list_mutex()
+    {
+#ifdef __GTHREAD_MUTEX_INIT
+      constinit static mutex m;
+#else
+      // Cannot use a constinit mutex, so use a local static.
+      alignas(mutex) constinit static char buf[sizeof(mutex)];
+      static mutex& m = *::new(buf) mutex();
 #endif
+      return m;
+    }
+#endif // ! USE_ATOMIC_SHARED_PTR
 
     struct Rule;
   }
@@ -154,7 +158,7 @@ namespace std::chrono
     static _Node*
     _S_list_head(memory_order)
     {
-      lock_guard<mutex> l(list_mutex);
+      lock_guard<mutex> l(list_mutex());
       return _S_head_owner.get();
     }
 
@@ -1074,8 +1078,8 @@ namespace std::chrono
     }
 
     // N.B. Leading slash as required by zoneinfo_file function.
-    const string tzdata_file = "/tzdata.zi";
-    const string leaps_file = "/leapseconds";
+    const string_view tzdata_file = "/tzdata.zi";
+    const string_view leaps_file = "/leapseconds";
 
 #ifdef _GLIBCXX_STATIC_TZDATA
 // Static copy of tzdata.zi embedded in the library as tzdata_chars[]
@@ -1106,7 +1110,7 @@ namespace std::chrono
 
       tzdata_stream() : istream(nullptr)
       {
-	if (string path = zoneinfo_file("/tzdata.zi"); !path.empty())
+	if (string path = zoneinfo_file(tzdata_file); !path.empty())
 	{
 	  filebuf fbuf;
 	  if (fbuf.open(path, std::ios::in))
@@ -1132,8 +1136,8 @@ namespace std::chrono
   pair<vector<leap_second>, bool>
   tzdb_list::_Node::_S_read_leap_seconds()
   {
-    // This list is valid until at least 2023-06-28 00:00:00 UTC.
-    auto expires = sys_days{2023y/6/28};
+    // This list is valid until at least 2023-12-28 00:00:00 UTC.
+    auto expires = sys_days{2023y/12/28};
     vector<leap_second> leaps
     {
       (leap_second)  78796800, // 1 Jul 1972
@@ -1279,7 +1283,7 @@ namespace std::chrono
       }
     // XXX small window here where _S_head_cache still points to previous tzdb.
 #else
-    lock_guard<mutex> l(list_mutex);
+    lock_guard<mutex> l(list_mutex());
     if (const _Node* h = _S_head_owner.get())
       {
 	if (h->db.version == new_head_ptr->db.version)
@@ -1406,11 +1410,12 @@ namespace std::chrono
 #else
     if (Node::_S_list_head(memory_order::relaxed) != nullptr) [[likely]]
     {
-      lock_guard<mutex> l(list_mutex);
+      lock_guard<mutex> l(list_mutex());
       const tzdb& current = Node::_S_head_owner->db;
       if (current.version == version)
 	return current;
     }
+    shared_ptr<Node> head; // Passed as unused arg to _S_replace_head.
 #endif
 
     auto [leaps, leaps_ok] = Node::_S_read_leap_seconds();
@@ -1499,9 +1504,6 @@ namespace std::chrono
     ranges::sort(node->db.links, {}, &time_zone_link::name);
     ranges::stable_sort(node->rules, {}, &Rule::name);
 
-#if ! USE_ATOMIC_SHARED_PTR
-    shared_ptr<Node> head;
-#endif
     return Node::_S_replace_head(std::move(head), std::move(node));
 #else
     __throw_disabled();
@@ -1526,7 +1528,7 @@ namespace std::chrono
 #if USE_ATOMIC_SHARED_PTR
     return const_iterator{_Node::_S_head_owner.load()};
 #else
-    lock_guard<mutex> l(list_mutex);
+    lock_guard<mutex> l(list_mutex());
     return const_iterator{_Node::_S_head_owner};
 #endif
   }
@@ -1539,7 +1541,7 @@ namespace std::chrono
     if (p._M_node) [[likely]]
     {
 #if ! USE_ATOMIC_SHARED_PTR
-      lock_guard<mutex> l(list_mutex);
+      lock_guard<mutex> l(list_mutex());
 #endif
       if (auto next = p._M_node->next) [[likely]]
 	return const_iterator{p._M_node->next = std::move(next->next)};
@@ -1633,6 +1635,9 @@ namespace std::chrono
     // TODO cache this function's result?
 
 #ifndef _AIX
+    // Repeat the preprocessor condition used by filesystem::read_symlink,
+    // to avoid a dependency on src/c++17/fs_ops.o if it won't work anyway.
+#if defined(_GLIBCXX_HAVE_READLINK) && defined(_GLIBCXX_HAVE_SYS_STAT_H)
     error_code ec;
     // This should be a symlink to e.g. /usr/share/zoneinfo/Europe/London
     auto path = filesystem::read_symlink("/etc/localtime", ec);
@@ -1651,6 +1656,7 @@ namespace std::chrono
 	      return tz;
 	  }
       }
+#endif
     // Otherwise, look for a file naming the time zone.
     string_view files[] {
       "/etc/timezone",    // Debian derivates
@@ -1663,6 +1669,28 @@ namespace std::chrono
 	  if (auto tz = do_locate_zone(this->zones, this->links, name))
 	    return tz;
       }
+
+    if (ifstream tzf{"/etc/sysconfig/clock"})
+      {
+	string line;
+	// Old versions of Suse use TIMEZONE. Old versions of RHEL use ZONE.
+	const string_view keys[] = { "TIMEZONE=" , "ZONE=" };
+	while (std::getline(tzf, line))
+	  for (string_view key : keys)
+	    if (line.starts_with(key))
+	      {
+		string_view name = line;
+		name.remove_prefix(key.size());
+		if (name.size() != 0 && name.front() == '"')
+		  {
+		    name.remove_prefix(1);
+		    if (auto pos = name.find('"'); pos != name.npos)
+		      name = name.substr(0, pos);
+		  }
+		if (auto tz = do_locate_zone(this->zones, this->links, name))
+		  return tz;
+	      }
+      }
 #else
     // AIX stores current zone in $TZ in /etc/environment but the value
     // is typically a POSIX time zone name, not IANA zone.
@@ -1670,18 +1698,15 @@ namespace std::chrono
     // https://www.ibm.com/support/pages/managing-time-zone-variable-posix
     if (const char* env = std::getenv("TZ"))
       {
-	string_view s(env);
-	if (s == "GMT0")
-	  s = "Etc/GMT";
-	else if (s.size() == 4 && s[3] == '0')
-	  s = "Etc/UTC";
-
-	// This will fail unless TZ contains an IANA time zone name,
-	// or one of the special cases above.
-	if (auto tz = do_locate_zone(this->zones, this->links, s))
+	// This will fail unless TZ contains an IANA time zone name.
+	if (auto tz = do_locate_zone(this->zones, this->links, env))
 	  return tz;
       }
 #endif
+
+    // Default to UTC.
+    if (auto tz = do_locate_zone(this->zones, this->links, "UTC"))
+      return tz;
 
     __throw_runtime_error("tzdb: cannot determine current zone");
   }
@@ -1945,6 +1970,22 @@ namespace std::chrono
       return in;
     }
 
+    // Test whether the RULES field of a Zone line is a valid Rule name.
+    inline bool
+    is_rule_name(string_view rules) noexcept
+    {
+      // The NAME field of a Rule line must start with a character that is
+      // neither an ASCII digit nor '-' nor '+'.
+      if (('0' <= rules[0] && rules[0] <= '9') || rules[0] == '-')
+	return false;
+      // However, some older tzdata.zi files (e.g. in tzdata-2018e-3.el6 RPM)
+      // used "+" as a Rule name, so we need to handle that special case.
+      if (rules[0] == '+')
+	return rules.size() == 1; // "+" is a rule name, "+1" is not.
+      // Everything else is the name of a Rule.
+      return true;
+    }
+
     istream& operator>>(istream& in, ZoneInfo& inf)
     {
       // STDOFF  RULES  FORMAT  [UNTIL]
@@ -1954,25 +1995,28 @@ namespace std::chrono
 
       in >> off >> quoted{rules} >> fmt;
       inf.m_offset = off.time;
-      if (rules == "-")
+      if (is_rule_name(rules))
 	{
-	  // Standard time always applies, no DST.
-	  inf.set_abbrev(fmt);
-	}
-      else if (string_view("0123456789-+").find(rules[0]) != string_view::npos)
-	{
-	  // rules specifies the difference from standard time.
-	  at_time rules_time;
-	  istringstream in2(std::move(rules));
-	  in2 >> rules_time;
-	  inf.m_save = duration_cast<minutes>(rules_time.time);
-	  select_std_or_dst_abbrev(fmt, inf.m_save);
-	  inf.set_abbrev(fmt);
+	  // `rules` refers to a named Rule which describes transitions.
+	  inf.set_rules_and_format(rules, fmt);
 	}
       else
 	{
-	  // rules refers to a named Rule which describes transitions.
-	  inf.set_rules_and_format(rules, fmt);
+	  if (rules == "-")
+	    {
+	      // Standard time always applies, no DST.
+	    }
+	  else
+	    {
+	      // `rules` specifies the difference from standard time,
+	      // e.g., "-2:30"
+	      at_time rules_time;
+	      istringstream in2(std::move(rules));
+	      in2 >> rules_time;
+	      inf.m_save = duration_cast<minutes>(rules_time.time);
+	      select_std_or_dst_abbrev(fmt, inf.m_save);
+	    }
+	  inf.set_abbrev(fmt);
 	}
 
       // YEAR [MONTH [DAY [TIME]]]

@@ -30,7 +30,9 @@ extern void bpf_print_operand_address (FILE *, rtx);
 extern void bpf_expand_prologue (void);
 extern void bpf_expand_epilogue (void);
 extern void bpf_expand_cbranch (machine_mode, rtx *);
+const char *bpf_add_core_reloc (rtx *operands, const char *templ);
 
-rtl_opt_pass * make_pass_bpf_core_attr (gcc::context *);
+class gimple_opt_pass;
+gimple_opt_pass *make_pass_lower_bpf_core (gcc::context *ctxt);
 
 #endif /* ! GCC_BPF_PROTOS_H */

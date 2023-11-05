@@ -3,7 +3,7 @@
  *
  * Specification: $(LINK2 https://dlang.org/spec/version.html, Conditional Compilation)
  *
- * Copyright:   Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/cond.d, _cond.d)
@@ -18,6 +18,7 @@ import dmd.arraytypes;
 import dmd.astenums;
 import dmd.ast_node;
 import dmd.dcast;
+import dmd.dinterpret;
 import dmd.dmodule;
 import dmd.dscope;
 import dmd.dsymbol;
@@ -26,10 +27,11 @@ import dmd.expression;
 import dmd.expressionsem;
 import dmd.globals;
 import dmd.identifier;
+import dmd.location;
 import dmd.mtype;
 import dmd.typesem;
 import dmd.common.outbuffer;
-import dmd.root.rootobject;
+import dmd.rootobject;
 import dmd.root.string;
 import dmd.tokens;
 import dmd.utils;
@@ -61,7 +63,7 @@ extern (C++) abstract class Condition : ASTNode
         return DYNCAST.condition;
     }
 
-    extern (D) this(const ref Loc loc)
+    extern (D) this(const ref Loc loc) @safe
     {
         this.loc = loc;
     }
@@ -76,6 +78,11 @@ extern (C++) abstract class Condition : ASTNode
     }
 
     inout(VersionCondition) isVersionCondition() inout
+    {
+        return null;
+    }
+
+    inout(StaticIfCondition) isStaticIfCondition() inout
     {
         return null;
     }
@@ -118,7 +125,7 @@ extern (C++) final class StaticForeach : RootObject
      */
     bool needExpansion = false;
 
-    extern (D) this(const ref Loc loc, ForeachStatement aggrfe, ForeachRangeStatement rangefe)
+    extern (D) this(const ref Loc loc, ForeachStatement aggrfe, ForeachRangeStatement rangefe) @safe
     {
         assert(!!aggrfe ^ !!rangefe);
 
@@ -127,7 +134,7 @@ extern (C++) final class StaticForeach : RootObject
         this.rangefe = rangefe;
     }
 
-    StaticForeach syntaxCopy()
+    extern (D) StaticForeach syntaxCopy()
     {
         return new StaticForeach(
             loc,
@@ -218,12 +225,12 @@ extern (C++) final class StaticForeach : RootObject
     {
         if (aggrfe)
         {
-            return new ForeachStatement(loc, aggrfe.op, parameters, aggrfe.aggr.syntaxCopy(), s, loc);
+            return new ForeachStatement(loc, aggrfe.op, parameters, aggrfe.aggr, s, loc);
         }
         else
         {
             assert(rangefe && parameters.length == 1);
-            return new ForeachRangeStatement(loc, rangefe.op, (*parameters)[0], rangefe.lwr.syntaxCopy(), rangefe.upr.syntaxCopy(), s, loc);
+            return new ForeachRangeStatement(loc, rangefe.op, (*parameters)[0], rangefe.lwr, rangefe.upr, s, loc);
         }
     }
 
@@ -253,7 +260,7 @@ extern (C++) final class StaticForeach : RootObject
         auto sdecl = new StructDeclaration(loc, sid, false);
         sdecl.storage_class |= STC.static_;
         sdecl.members = new Dsymbols();
-        auto fid = Identifier.idPool(tupleFieldName.ptr, tupleFieldName.length);
+        auto fid = Identifier.idPool(tupleFieldName);
         auto ty = new TypeTypeof(loc, new TupleExp(loc, e));
         sdecl.members.push(new VarDeclaration(loc, ty, fid, null, 0));
         auto r = cast(TypeStruct)sdecl.type;
@@ -273,7 +280,7 @@ extern (C++) final class StaticForeach : RootObject
      *     An AST for the expression `Tuple(e)`.
      */
 
-    private extern(D) Expression createTuple(const ref Loc loc, TypeStruct type, Expressions* e)
+    private extern(D) Expression createTuple(const ref Loc loc, TypeStruct type, Expressions* e) @safe
     {   // TODO: move to druntime?
         return new CallExp(loc, new TypeExp(loc, type), e);
     }
@@ -316,7 +323,7 @@ extern (C++) final class StaticForeach : RootObject
             foreach (params; pparams)
             {
                 auto p = aggrfe ? (*aggrfe.parameters)[i] : rangefe.prm;
-                params.push(new Parameter(p.storageClass, p.type, p.ident, null, null));
+                params.push(new Parameter(aloc, p.storageClass, p.type, p.ident, null, null));
             }
         }
         Expression[2] res;
@@ -490,7 +497,7 @@ extern (C++) class DVCondition : Condition
     Identifier ident;
     Module mod;
 
-    extern (D) this(const ref Loc loc, Module mod, uint level, Identifier ident)
+    extern (D) this(const ref Loc loc, Module mod, uint level, Identifier ident) @safe
     {
         super(loc);
         this.mod = mod;
@@ -557,7 +564,7 @@ extern (C++) final class DebugCondition : DVCondition
      *           If `null`, this conditiion will use an integer level.
      *  loc = Location in the source file
      */
-    extern (D) this(const ref Loc loc, Module mod, uint level, Identifier ident)
+    extern (D) this(const ref Loc loc, Module mod, uint level, Identifier ident) @safe
     {
         super(loc, mod, level, ident);
     }
@@ -631,7 +638,7 @@ extern (C++) final class VersionCondition : DVCondition
      * Returns:
      *   `true` if it is reserved, `false` otherwise
      */
-    extern(D) private static bool isReserved(const(char)[] ident)
+    extern(D) private static bool isReserved(const(char)[] ident) @safe
     {
         // This list doesn't include "D_*" versions, see the last return
         switch (ident)
@@ -685,6 +692,10 @@ extern (C++) final class VersionCondition : DVCondition
             case "LDC":
             case "linux":
             case "LittleEndian":
+            case "LoongArch32":
+            case "LoongArch64":
+            case "LoongArch_HardFloat":
+            case "LoongArch_SoftFloat":
             case "MinGW":
             case "MIPS32":
             case "MIPS64":
@@ -727,6 +738,7 @@ extern (C++) final class VersionCondition : DVCondition
             case "SysV4":
             case "TVOS":
             case "unittest":
+            case "VisionOS":
             case "WASI":
             case "WatchOS":
             case "WebAssembly":
@@ -833,7 +845,7 @@ extern (C++) final class VersionCondition : DVCondition
      *           If `null`, this conditiion will use an integer level.
      *  loc = Location in the source file
      */
-    extern (D) this(const ref Loc loc, Module mod, uint level, Identifier ident)
+    extern (D) this(const ref Loc loc, Module mod, uint level, Identifier ident) @safe
     {
         super(loc, mod, level, ident);
     }
@@ -895,7 +907,7 @@ extern (C++) final class StaticIfCondition : Condition
 {
     Expression exp;
 
-    extern (D) this(const ref Loc loc, Expression exp)
+    extern (D) this(const ref Loc loc, Expression exp) @safe
     {
         super(loc);
         this.exp = exp;
@@ -929,9 +941,6 @@ extern (C++) final class StaticIfCondition : Condition
             import dmd.staticcond;
             bool errors;
 
-            if (!exp)
-                return errorReturn();
-
             bool result = evalStaticCondition(sc, exp, exp, errors);
 
             // Prevent repeated condition evaluation.
@@ -951,6 +960,11 @@ extern (C++) final class StaticIfCondition : Condition
     override void accept(Visitor v)
     {
         v.visit(this);
+    }
+
+    override inout(StaticIfCondition) isStaticIfCondition() inout
+    {
+        return this;
     }
 
     override const(char)* toChars() const

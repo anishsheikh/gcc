@@ -55,6 +55,8 @@ EXTERN void _M2_CmdArgs_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_M2Preprocess_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_M2Error_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_M2Search_init (int argc, char *argv[], char *envp[]);
+EXTERN void _M2_DynamicPath_init (int argc, char *argv[], char *envp[]);
+EXTERN void _M2_PathName_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_Indexing_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_NameKey_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_NumberIO_init (int argc, char *argv[], char *envp[]);
@@ -101,6 +103,7 @@ EXTERN void _M2_dtoa_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_ldtoa_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_M2Check_init (int argc, char *argv[], char *envp[]);
 EXTERN void _M2_M2SSA_init (int argc, char *argv[], char *envp[]);
+EXTERN void _M2_M2SymInit_init (int argc, char *argv[], char *envp[]);
 EXTERN void exit (int);
 EXTERN void M2Comp_compile (const char *filename);
 EXTERN void RTExceptions_DefaultErrorCatch (void);
@@ -141,6 +144,8 @@ init_FrontEndInit (void)
   _M2_StrLib_init (0, NULL, NULL);
   _M2_dtoa_init (0, NULL, NULL);
   _M2_ldtoa_init (0, NULL, NULL);
+  _M2_DynamicPath_init (0, NULL, NULL);
+  _M2_PathName_init (0, NULL, NULL);
   _M2_M2Search_init (0, NULL, NULL);
   _M2_M2Options_init (0, NULL, NULL);
 }
@@ -191,6 +196,7 @@ init_PerCompilationInit (const char *filename)
   _M2_PCBuild_init (0, NULL, NULL);
   _M2_Sets_init (0, NULL, NULL);
   _M2_M2SSA_init (0, NULL, NULL);
+  _M2_M2SymInit_init (0, NULL, NULL);
   _M2_M2Check_init (0, NULL, NULL);
   M2Comp_compile (filename);
 }

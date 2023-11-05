@@ -99,7 +99,7 @@ build_modify_expr (location_t location, tree lhs, enum tree_code modifycode,
   if (TREE_CODE (lhs) == COMPONENT_REF
       && (TREE_CODE (lhstype) == INTEGER_TYPE
           || TREE_CODE (lhstype) == BOOLEAN_TYPE
-          || TREE_CODE (lhstype) == REAL_TYPE
+	  || SCALAR_FLOAT_TYPE_P (lhstype)
           || TREE_CODE (lhstype) == ENUMERAL_TYPE))
     lhstype = TREE_TYPE (get_unwidened (lhs, 0));
 
@@ -188,7 +188,6 @@ m2treelib_DoCall0 (location_t location, tree rettype, tree funcptr)
   tree *argarray = XALLOCAVEC (tree, 1);
 
   argarray[0] = NULL_TREE;
-
   return build_call_array_loc (location, rettype, funcptr, 0, argarray);
 }
 
@@ -200,7 +199,6 @@ m2treelib_DoCall1 (location_t location, tree rettype, tree funcptr, tree arg0)
   tree *argarray = XALLOCAVEC (tree, 1);
 
   argarray[0] = arg0;
-
   return build_call_array_loc (location, rettype, funcptr, 1, argarray);
 }
 
@@ -214,7 +212,6 @@ m2treelib_DoCall2 (location_t location, tree rettype, tree funcptr, tree arg0,
 
   argarray[0] = arg0;
   argarray[1] = arg1;
-
   return build_call_array_loc (location, rettype, funcptr, 2, argarray);
 }
 
@@ -229,7 +226,6 @@ m2treelib_DoCall3 (location_t location, tree rettype, tree funcptr, tree arg0,
   argarray[0] = arg0;
   argarray[1] = arg1;
   argarray[2] = arg2;
-
   return build_call_array_loc (location, rettype, funcptr, 3, argarray);
 }
 
@@ -237,7 +233,7 @@ m2treelib_DoCall3 (location_t location, tree rettype, tree funcptr, tree arg0,
    type to be copied upon indirection.  */
 
 tree
-m2treelib_get_rvalue (location_t location, tree t, tree type, int is_lvalue)
+m2treelib_get_rvalue (location_t location, tree t, tree type, bool is_lvalue)
 {
   if (is_lvalue)
     return m2expr_BuildIndirect (location, t, type);
@@ -252,7 +248,7 @@ m2treelib_get_rvalue (location_t location, tree t, tree type, int is_lvalue)
    field list and return the appropriate field number.  */
 
 tree
-m2treelib_get_field_no (tree type, tree op, int is_const, unsigned int fieldNo)
+m2treelib_get_field_no (tree type, tree op, bool is_const, unsigned int fieldNo)
 {
   ASSERT_BOOL (is_const);
   if (is_const)
@@ -273,8 +269,8 @@ m2treelib_get_field_no (tree type, tree op, int is_const, unsigned int fieldNo)
    Either p->field or the constant(op.fieldNo) is returned.  */
 
 tree
-m2treelib_get_set_value (location_t location, tree p, tree field, int is_const,
-                         int is_lvalue, tree op, unsigned int fieldNo)
+m2treelib_get_set_value (location_t location, tree p, tree field, bool is_const,
+                         bool is_lvalue, tree op, unsigned int fieldNo)
 {
   tree value;
   constructor_elt *ce;
@@ -323,7 +319,7 @@ m2treelib_get_set_value (location_t location, tree p, tree field, int is_const,
 /* get_set_address - returns the address of op1.  */
 
 tree
-m2treelib_get_set_address (location_t location, tree op1, int is_lvalue)
+m2treelib_get_set_address (location_t location, tree op1, bool is_lvalue)
 {
   if (is_lvalue)
     return op1;
@@ -368,8 +364,8 @@ m2treelib_get_set_field_des (location_t location, tree p, tree field)
    is not a constant.  NULL is returned if, op, is a constant.  */
 
 tree
-m2treelib_get_set_address_if_var (location_t location, tree op, int is_lvalue,
-                                  int is_const)
+m2treelib_get_set_address_if_var (location_t location, tree op, bool is_lvalue,
+                                  bool is_const)
 {
   if (is_const)
     return NULL;
@@ -377,12 +373,12 @@ m2treelib_get_set_address_if_var (location_t location, tree op, int is_lvalue,
     return m2treelib_get_set_address (location, op, is_lvalue);
 }
 
-/* add_stmt - t is a statement.  Add it to the statement-tree.  */
+/* add_stmt add stmt to the statement-tree.  */
 
 tree
-add_stmt (location_t location, tree t)
+add_stmt (location_t location, tree stmt)
 {
-  return m2block_add_stmt (location, t);
+  return m2block_add_stmt (location, stmt);
 }
 
 /* taken from gcc/c-semantics.cc.  */

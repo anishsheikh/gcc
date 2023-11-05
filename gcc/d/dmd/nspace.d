@@ -36,7 +36,7 @@
  * are valid D identifier.
  *
  * See_Also:    https://github.com/dlang/dmd/pull/10031
- * Copyright:   Copyright (C) 1999-2022 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2023 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/src/dmd/nspace.d, _nspace.d)
@@ -52,9 +52,11 @@ import dmd.astenums;
 import dmd.dscope;
 import dmd.dsymbol;
 import dmd.dsymbolsem;
+import dmd.errors;
 import dmd.expression;
 import dmd.globals;
 import dmd.identifier;
+import dmd.location;
 import dmd.visitor;
 import core.stdc.stdio;
 
@@ -133,7 +135,7 @@ extern (C++) final class Nspace : ScopeDsymbol
         if (!members || !symtab) // opaque or semantic() is not yet called
         {
             if (!(flags & IgnoreErrors))
-                error("is forward referenced when looking for `%s`", ident.toChars());
+                .error(loc, "%s `%s` is forward referenced when looking for `%s`", kind, toPrettyChars, ident.toChars());
             return null;
         }
 

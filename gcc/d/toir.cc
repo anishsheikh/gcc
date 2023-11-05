@@ -215,6 +215,38 @@ add_stmt (tree t)
   if (!TREE_SIDE_EFFECTS (t))
     return;
 
+  /* If a call expression has no side effects, and there's no explicit
+     `cast(void)', then issue a warning about the unused return value.  */
+  if (TREE_CODE (t) == INDIRECT_REF)
+    {
+      t = TREE_OPERAND (t, 0);
+
+      if (TREE_CODE (TREE_TYPE (t)) != REFERENCE_TYPE)
+	warning (OPT_Wunused_value, "value computed is not used");
+    }
+
+  if (TREE_CODE (t) == CALL_EXPR && CALL_EXPR_FN (t) != NULL_TREE
+      && CALL_EXPR_WARN_IF_UNUSED (t))
+    {
+      tree callee =  CALL_EXPR_FN (t);
+
+      /* It's a call to a function or function pointer.  */
+      if (TREE_CODE (callee) == ADDR_EXPR
+	  && VAR_OR_FUNCTION_DECL_P (TREE_OPERAND (callee, 0)))
+	callee = TREE_OPERAND (callee, 0);
+
+      /* It's a call to a delegate object.  */
+      if (TREE_CODE (callee) == COMPONENT_REF
+	  && TREE_CODE (TREE_TYPE (TREE_OPERAND (callee, 0))) == RECORD_TYPE
+	  && TYPE_DELEGATE (TREE_TYPE (TREE_OPERAND (callee, 0))))
+	callee = TREE_OPERAND (callee, 0);
+
+      warning (OPT_Wunused_value,
+	       "calling %qE without side effects discards return value "
+	       "of type %qT; prepend a %<cast(void)%> if intentional",
+	       callee, TREE_TYPE (t));
+    }
+
   if (TREE_CODE (t) == COMPOUND_EXPR)
     {
       /* Push out each comma expressions as separate statements.  */
@@ -582,8 +614,9 @@ public:
     tree ifbody = void_node;
     tree elsebody = void_node;
 
-    /* Build the `then' branch.  */
-    if (s->ifbody)
+    /* Build the `then' branch, don't do code generation when the condition
+       is `if (__ctfe)', as that is always false at run-time.  */
+    if (s->ifbody && !s->isIfCtfeBlock ())
       {
 	push_stmt_list ();
 	this->build_stmt (s->ifbody);
@@ -779,8 +812,8 @@ public:
 
     this->do_label (label);
 
-    if (this->is_return_label (s->ident) && this->func_->fensure != NULL)
-      this->build_stmt (this->func_->fensure);
+    if (this->is_return_label (s->ident) && this->func_->fensure () != NULL)
+      this->build_stmt (this->func_->fensure ());
     else if (s->statement)
       this->build_stmt (s->statement);
   }

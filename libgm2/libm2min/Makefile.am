@@ -17,7 +17,7 @@
 
 SUFFIXES = .c .mod .def .o .obj .lo .a .la
 
-ACLOCAL_AMFLAGS = -I . -I .. -I ../config
+ACLOCAL_AMFLAGS = -I .. -I ../config
 
 VPATH = . @srcdir@/../../gcc/m2/gm2-libs-min
 
@@ -89,6 +89,7 @@ AM_MAKEFLAGS = \
 	"NM_FOR_TARGET=$(NM_FOR_TARGET)" \
 	"DESTDIR=$(DESTDIR)" \
 	"WERROR=$(WERROR)" \
+        "TARGET_LONGDOUBLE_ABI=$(TARGET_LONGDOUBLE_ABI)" \
         "TARGET_LIB_PATH_libgm2=$(TARGET_LIB_PATH_libgm2)"
 
 # Subdir rules rely on $(FLAGS_TO_PASS)
@@ -103,13 +104,19 @@ libm2mindir = libm2min
 toolexeclib_LTLIBRARIES = libm2min.la
 libm2min_la_SOURCES = $(M2MODS) libc.c
 libm2min_la_DEPENDENCIES = SYSTEM.def $(addsuffix .lo, $(basename $(libm2min_la_SOURCES)))
-libm2min_la_CFLAGS = -I. -I$(GM2_SRC)/gm2-libs-min -I$(GM2_SRC)/gm2-libs
-libm2min_la_M2FLAGS = -I. -I$(GM2_SRC)/gm2-libs-min -I$(GM2_SRC)/gm2-libs -fno-exceptions \
-   -fno-m2-plugin -fno-scaffold-dynamic -fno-scaffold-main
+libm2min_la_CFLAGS = -I. -I$(GM2_SRC)/gm2-libs-min -I$(GM2_SRC)/gm2-libs $(TARGET_LONGDOUBLE_ABI)
+libm2min_la_M2FLAGS = \
+   -fm2-pathname=m2min -I. -I$(GM2_SRC)/gm2-libs-min \
+   -fm2-pathname=m2pim -I$(GM2_SRC)/gm2-libs -fno-exceptions \
+   -fno-m2-plugin -fno-scaffold-dynamic -fno-scaffold-main -fm2-prefix=m2min \
+   $(TARGET_LONGDOUBLE_ABI)
 if TARGET_DARWIN
 libm2min_la_link_flags = -Wl,-undefined,dynamic_lookup
 else
 libm2min_la_link_flags =
+endif
+if ENABLE_DARWIN_AT_RPATH
+libm2min_la_link_flags += -nodefaultrpaths -Wl,-rpath,@loader_path/
 endif
 libm2min_la_LINK = $(LINK) -version-info $(libtool_VERSION) $(libm2min_la_link_flags)
 BUILT_SOURCES = SYSTEM.def
@@ -118,7 +125,9 @@ CLEANFILES = SYSTEM.def
 M2LIBDIR = /m2/m2min/
 
 .mod.lo:
-	$(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(GM2_FOR_TARGET) -c $(CFLAGS_FOR_TARGET) $(LIBCFLAGS) $(libm2min_la_M2FLAGS) $< -o $@
+	$(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile \
+                   $(GM2_FOR_TARGET) -c \
+                   $(CFLAGS_FOR_TARGET) $(LIBCFLAGS) $(libm2min_la_M2FLAGS) $< -o $@
 
 libc.o: $(GM2_SRC)/gm2-libs-min/libc.c
 
@@ -128,25 +137,20 @@ SYSTEM.def: Makefile
 	bash $(GM2_SRC)/tools-src/makeSystem -fpim \
              $(GM2_SRC)/gm2-libs-min/SYSTEM.def \
              $(GM2_SRC)/gm2-libs-min/SYSTEM.mod \
-             -I$(GM2_SRC)/gm2-libs-min:$(GM2_SRC)/gm2-libs \
+             -I$(GM2_SRC)/gm2-libs-min -I$(GM2_SRC)/gm2-libs \
              "$(GM2_FOR_TARGET) -fno-exceptions" $@
 
 install-data-local: force
-	mkdir -p $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)
-	$(INSTALL_DATA) .libs/libm2min.la $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)
-	chmod 644 $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)libm2min.la
-	$(INSTALL_DATA) .libs/libm2min.a $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)
-	chmod 644 $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)libm2min.a
-	$(RANLIB) $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)libm2min.a
+	mkdir -p $(DESTDIR)$(inst_libdir)/$(M2LIBDIR)
 	for i in $(M2DEFS) $(M2MODS) ; do \
            if [ -f $$i ] ; then \
-              $(INSTALL_DATA) $$i '$(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)'; \
+              $(INSTALL_DATA) $$i '$(DESTDIR)$(inst_libdir)/$(M2LIBDIR)'; \
            elif [ -f @srcdir@/../../gcc/m2/gm2-libs-min/$$i ] ; then \
-              $(INSTALL_DATA) @srcdir@/../../gcc/m2/gm2-libs-min/$$i '$(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)'; \
+              $(INSTALL_DATA) @srcdir@/../../gcc/m2/gm2-libs-min/$$i '$(DESTDIR)$(inst_libdir)/$(M2LIBDIR)'; \
            else \
               echo "cannot find $$i" ; exit 1 ; \
            fi ; \
-           chmod 644 $(DESTDIR)$(inst_libdir)/$(MULTIDIR)$(M2LIBDIR)$$i ; \
+           chmod 644 $(DESTDIR)$(inst_libdir)/$(M2LIBDIR)$$i ; \
 	done
 
 force:

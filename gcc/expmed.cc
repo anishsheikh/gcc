@@ -1631,6 +1631,7 @@ extract_bit_field_as_subreg (machine_mode mode, rtx op0,
 }
 
 /* A subroutine of extract_bit_field, with the same arguments.
+   If UNSIGNEDP is -1, the result need not be sign or zero extended.
    If FALLBACK_P is true, fall back to extract_fixed_bit_field
    if we can find no other means of implementing the operation.
    if FALLBACK_P is false, return NULL instead.  */
@@ -1933,7 +1934,8 @@ extract_integral_bit_field (rtx op0, opt_scalar_int_mode op0_mode,
 	  rtx result_part
 	    = extract_bit_field_1 (op0, MIN (BITS_PER_WORD,
 					     bitsize - i * BITS_PER_WORD),
-				   bitnum + bit_offset, 1, target_part,
+				   bitnum + bit_offset,
+				   (unsignedp ? 1 : -1), target_part,
 				   mode, word_mode, reverse, fallback_p, NULL);
 
 	  gcc_assert (target_part);
@@ -2187,6 +2189,7 @@ extract_fixed_bit_field (machine_mode tmode, rtx op0,
 
 /* Helper function for extract_fixed_bit_field, extracts
    the bit field always using MODE, which is the mode of OP0.
+   If UNSIGNEDP is -1, the result need not be sign or zero extended.
    The other arguments are as for extract_fixed_bit_field.  */
 
 static rtx
@@ -2231,7 +2234,8 @@ extract_fixed_bit_field_1 (machine_mode tmode, rtx op0, scalar_int_mode mode,
       /* Unless the msb of the field used to be the msb when we shifted,
 	 mask out the upper bits.  */
 
-      if (GET_MODE_BITSIZE (mode) != bitnum + bitsize)
+      if (GET_MODE_BITSIZE (mode) != bitnum + bitsize
+	  && unsignedp != -1)
 	return expand_binop (new_mode, and_optab, op0,
 			     mask_rtx (new_mode, 0, bitsize, 0),
 			     target, 1, OPTAB_LIB_WIDEN);
@@ -2535,14 +2539,10 @@ expand_shift_1 (enum tree_code code, machine_mode mode, rtx shifted,
 	op1 = SUBREG_REG (op1);
     }
 
-  /* Canonicalize rotates by constant amount.  If op1 is bitsize / 2,
-     prefer left rotation, if op1 is from bitsize / 2 + 1 to
-     bitsize - 1, use other direction of rotate with 1 .. bitsize / 2 - 1
-     amount instead.  */
-  if (rotate
-      && CONST_INT_P (op1)
-      && IN_RANGE (INTVAL (op1), GET_MODE_BITSIZE (scalar_mode) / 2 + left,
-		   GET_MODE_BITSIZE (scalar_mode) - 1))
+  /* Canonicalize rotates by constant amount.  We may canonicalize
+     to reduce the immediate or if the ISA can rotate by constants
+     in only on direction.  */
+  if (rotate && reverse_rotate_by_imm_p (scalar_mode, left, op1))
     {
       op1 = gen_int_shift_amount (mode, (GET_MODE_BITSIZE (scalar_mode)
 					 - INTVAL (op1)));
@@ -4222,8 +4222,8 @@ expand_sdiv_pow2 (scalar_int_mode mode, rtx op0, HOST_WIDE_INT d)
 
 rtx
 expand_divmod (int rem_flag, enum tree_code code, machine_mode mode,
-	       tree treeop0, tree treeop1, rtx op0, rtx op1, rtx target,
-	       int unsignedp, enum optab_methods methods)
+	       rtx op0, rtx op1, rtx target, int unsignedp,
+	       enum optab_methods methods)
 {
   machine_mode compute_mode;
   rtx tquotient;
@@ -4374,17 +4374,6 @@ expand_divmod (int rem_flag, enum tree_code code, machine_mode mode,
 		 + add_cost (speed, compute_mode));
 
   last_div_const = ! rem_flag && op1_is_constant ? INTVAL (op1) : 0;
-
-  /* Check if the target has specific expansions for the division.  */
-  tree cst;
-  if (treeop0
-      && treeop1
-      && (cst = uniform_integer_cst_p (treeop1))
-      && targetm.vectorize.can_special_div_by_const (code, TREE_TYPE (treeop0),
-						     wi::to_wide (cst),
-						     &target, op0, op1))
-    return target;
-
 
   /* Now convert to the best mode to use.  */
   if (compute_mode != mode)
@@ -4629,8 +4618,8 @@ expand_divmod (int rem_flag, enum tree_code code, machine_mode mode,
 			    || (optab_handler (sdivmod_optab, int_mode)
 				!= CODE_FOR_nothing)))
 		      quotient = expand_divmod (0, TRUNC_DIV_EXPR,
-						int_mode, treeop0, treeop1,
-						op0, gen_int_mode (abs_d,
+						int_mode, op0,
+						gen_int_mode (abs_d,
 							      int_mode),
 						NULL_RTX, 0);
 		    else
@@ -4819,8 +4808,8 @@ expand_divmod (int rem_flag, enum tree_code code, machine_mode mode,
 				      size - 1, NULL_RTX, 0);
 		t3 = force_operand (gen_rtx_MINUS (int_mode, t1, nsign),
 				    NULL_RTX);
-		t4 = expand_divmod (0, TRUNC_DIV_EXPR, int_mode, treeop0,
-				    treeop1, t3, op1, NULL_RTX, 0);
+		t4 = expand_divmod (0, TRUNC_DIV_EXPR, int_mode, t3, op1,
+				    NULL_RTX, 0);
 		if (t4)
 		  {
 		    rtx t5;

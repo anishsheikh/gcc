@@ -217,7 +217,7 @@ maybe_unwind_expanded_macro_loc (diagnostic_context *context,
            This is the locus 2/ of the earlier comment.  */
         location_t resolved_exp_loc =
           linemap_resolve_location (line_table,
-                                    MACRO_MAP_EXPANSION_POINT_LOCATION (iter->map),
+                                    iter->map->get_expansion_point_location (),
                                     LRK_MACRO_DEFINITION_LOCATION, NULL);
 
         diagnostic_append_note (context, resolved_exp_loc, 
@@ -261,7 +261,7 @@ default_tree_printer (pretty_printer *pp, text_info *text, const char *spec,
   switch (*spec)
     {
     case 'E':
-      t = va_arg (*text->args_ptr, tree);
+      t = va_arg (*text->m_args_ptr, tree);
       if (TREE_CODE (t) == IDENTIFIER_NODE)
 	{
 	  pp_identifier (pp, IDENTIFIER_POINTER (t));
@@ -270,14 +270,14 @@ default_tree_printer (pretty_printer *pp, text_info *text, const char *spec,
       break;
 
     case 'D':
-      t = va_arg (*text->args_ptr, tree);
+      t = va_arg (*text->m_args_ptr, tree);
       if (VAR_P (t) && DECL_HAS_DEBUG_EXPR_P (t))
 	t = DECL_DEBUG_EXPR (t);
       break;
 
     case 'F':
     case 'T':
-      t = va_arg (*text->args_ptr, tree);
+      t = va_arg (*text->m_args_ptr, tree);
       break;
 
     default:
@@ -374,8 +374,8 @@ tree_diagnostics_defaults (diagnostic_context *context)
   diagnostic_starter (context) = default_tree_diagnostic_starter;
   diagnostic_finalizer (context) = default_diagnostic_finalizer;
   diagnostic_format_decoder (context) = default_tree_printer;
-  context->print_path = default_tree_diagnostic_path_printer;
-  context->make_json_for_path = default_tree_make_json_for_path;
-  context->set_locations_cb = set_inlining_locations;
-  context->m_client_data_hooks = make_compiler_data_hooks ();
+  context->m_print_path = default_tree_diagnostic_path_printer;
+  context->m_make_json_for_path = default_tree_make_json_for_path;
+  context->set_set_locations_callback (set_inlining_locations);
+  context->set_client_data_hooks (make_compiler_data_hooks ());
 }
