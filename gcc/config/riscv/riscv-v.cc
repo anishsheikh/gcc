@@ -414,7 +414,9 @@ public:
   rtx get_merged_repeating_sequence ();
 
   bool repeating_sequence_use_merge_profitable_p ();
-  rtx get_merge_scalar_mask (unsigned int) const;
+  bool combine_sequence_use_slideup_profitable_p ();
+  bool combine_sequence_use_merge_profitable_p ();
+  rtx get_merge_scalar_mask (unsigned int, machine_mode) const;
 
   bool single_step_npatterns_p () const;
   bool npatterns_all_equal_p () const;
@@ -511,6 +513,50 @@ rvv_builder::repeating_sequence_use_merge_profitable_p ()
   return (build_merge_mask_cost + merge_cost) * npatterns () < slide1down_cost;
 }
 
+/* Return true if it's worthwhile to use slideup combine 2 vectors.  */
+bool
+rvv_builder::combine_sequence_use_slideup_profitable_p ()
+{
+  int nelts = full_nelts ().to_constant ();
+  int leading_ndups = this->count_dups (0, nelts - 1, 1);
+  int trailing_ndups = this->count_dups (nelts - 1, -1, -1);
+
+  /* ??? Current heuristic we do is we do combine 2 vectors
+     by slideup when:
+       1. # of leading same elements is equal to # of trailing same elements.
+       2. Both of above are equal to nelts / 2.
+     Otherwise, it is not profitable.  */
+  return leading_ndups == trailing_ndups && trailing_ndups == nelts / 2;
+}
+
+/* Return true if it's worthwhile to use merge combine vector with a scalar.  */
+bool
+rvv_builder::combine_sequence_use_merge_profitable_p ()
+{
+  int nelts = full_nelts ().to_constant ();
+  int leading_ndups = this->count_dups (0, nelts - 1, 1);
+  int trailing_ndups = this->count_dups (nelts - 1, -1, -1);
+  int nregs = riscv_get_v_regno_alignment (int_mode ());
+
+  if (leading_ndups + trailing_ndups != nelts)
+    return false;
+
+  /* Leading elements num > 255 which exceeds the maximum value
+     of QImode, we will need to use HImode.  */
+  machine_mode mode;
+  if (leading_ndups > 255 || nregs > 2)
+    {
+      if (!get_vector_mode (HImode, nelts).exists (&mode))
+	return false;
+      /* We will need one more AVL/VL toggling vsetvl instruction.  */
+      return leading_ndups > 4 && trailing_ndups > 4;
+    }
+
+  /* { a, a, a, b, b, ... , b } and { b, b, b, a, a, ... , a }
+     consume 3 slide instructions.  */
+  return leading_ndups > 3 && trailing_ndups > 3;
+}
+
 /* Merge the repeating sequence into a single element and return the RTX.  */
 rtx
 rvv_builder::get_merged_repeating_sequence ()
@@ -546,7 +592,8 @@ rvv_builder::get_merged_repeating_sequence ()
    To merge "b", the mask should be 0101....
 */
 rtx
-rvv_builder::get_merge_scalar_mask (unsigned int index_in_pattern) const
+rvv_builder::get_merge_scalar_mask (unsigned int index_in_pattern,
+				    machine_mode inner_mode) const
 {
   unsigned HOST_WIDE_INT mask = 0;
   unsigned HOST_WIDE_INT base_mask = (1ULL << index_in_pattern);
@@ -565,7 +612,7 @@ rvv_builder::get_merge_scalar_mask (unsigned int index_in_pattern) const
   for (int i = 0; i < limit; i++)
     mask |= base_mask << (i * npatterns ());
 
-  return gen_int_mode (mask, inner_int_mode ());
+  return gen_int_mode (mask, inner_mode);
 }
 
 /* Return true if the variable-length vector is single step.
@@ -873,17 +920,45 @@ emit_vlmax_decompress_insn (rtx target, rtx op0, rtx op1, rtx mask)
 /* Emit merge instruction.  */
 
 static machine_mode
-get_repeating_sequence_dup_machine_mode (const rvv_builder &builder)
+get_repeating_sequence_dup_machine_mode (const rvv_builder &builder,
+					 machine_mode mask_bit_mode)
 {
-  poly_uint64 dup_nunits = GET_MODE_NUNITS (builder.mode ());
+  unsigned mask_precision = GET_MODE_PRECISION (mask_bit_mode).to_constant ();
+  unsigned mask_scalar_size = mask_precision > builder.inner_bits_size ()
+    ? builder.inner_bits_size () : mask_precision;
 
-  if (known_ge (GET_MODE_SIZE (builder.mode ()), BYTES_PER_RISCV_VECTOR))
+  scalar_mode inner_mode;
+  unsigned minimal_bits_size;
+
+  switch (mask_scalar_size)
     {
-      dup_nunits = exact_div (BYTES_PER_RISCV_VECTOR,
-	builder.inner_bytes_size ());
+      case 8:
+	inner_mode = QImode;
+	minimal_bits_size = TARGET_MIN_VLEN / 8; /* AKA RVVMF8.  */
+	break;
+      case 16:
+	inner_mode = HImode;
+	minimal_bits_size = TARGET_MIN_VLEN / 4; /* AKA RVVMF4.  */
+	break;
+      case 32:
+	inner_mode = SImode;
+	minimal_bits_size = TARGET_MIN_VLEN / 2; /* AKA RVVMF2.  */
+	break;
+      case 64:
+	inner_mode = DImode;
+	minimal_bits_size = TARGET_MIN_VLEN / 1; /* AKA RVVM1.  */
+	break;
+      default:
+	gcc_unreachable ();
+	break;
     }
 
-  return get_vector_mode (builder.inner_int_mode (), dup_nunits).require ();
+  gcc_assert (mask_precision % mask_scalar_size == 0);
+
+  uint64_t dup_nunit = mask_precision > mask_scalar_size
+    ? mask_precision / mask_scalar_size : minimal_bits_size / mask_scalar_size;
+
+  return get_vector_mode (inner_mode, dup_nunit).require ();
 }
 
 /* Expand series const vector.  */
@@ -2084,9 +2159,9 @@ expand_vector_init_merge_repeating_sequence (rtx target,
      since we don't have such instruction in RVV.
      Instead, we should use INT mode (QI/HI/SI/DI) with integer move
      instruction to generate the mask data we want.  */
-  machine_mode mask_int_mode
-    = get_repeating_sequence_dup_machine_mode (builder);
   machine_mode mask_bit_mode = get_mask_mode (builder.mode ());
+  machine_mode mask_int_mode
+    = get_repeating_sequence_dup_machine_mode (builder, mask_bit_mode);
   uint64_t full_nelts = builder.full_nelts ().to_constant ();
 
   /* Step 1: Broadcast the first pattern.  */
@@ -2097,7 +2172,8 @@ expand_vector_init_merge_repeating_sequence (rtx target,
   for (unsigned int i = 1; i < builder.npatterns (); i++)
     {
       /* Step 2-1: Generate mask register v0 for each merge.  */
-      rtx merge_mask = builder.get_merge_scalar_mask (i);
+      rtx merge_mask
+	= builder.get_merge_scalar_mask (i, GET_MODE_INNER (mask_int_mode));
       rtx mask = gen_reg_rtx (mask_bit_mode);
       rtx dup = gen_reg_rtx (mask_int_mode);
 
@@ -2124,6 +2200,113 @@ expand_vector_init_merge_repeating_sequence (rtx target,
       emit_vlmax_insn (code_for_pred_merge_scalar (GET_MODE (target)),
 			MERGE_OP, ops);
     }
+}
+
+/* Use slideup approach to combine the vectors.
+     v = {a, a, a, a, b, b, b, b}
+
+   First:
+     v1 = {a, a, a, a, a, a, a, a}
+     v2 = {b, b, b, b, b, b, b, b}
+     v = slideup (v1, v2, nelt / 2)
+*/
+static void
+expand_vector_init_slideup_combine_sequence (rtx target,
+					     const rvv_builder &builder)
+{
+  machine_mode mode = GET_MODE (target);
+  int nelts = builder.full_nelts ().to_constant ();
+  rtx first_elt = builder.elt (0);
+  rtx last_elt = builder.elt (nelts - 1);
+  rtx low = expand_vector_broadcast (mode, first_elt);
+  rtx high = expand_vector_broadcast (mode, last_elt);
+  insn_code icode = code_for_pred_slide (UNSPEC_VSLIDEUP, mode);
+  rtx ops[] = {target, low, high, gen_int_mode (nelts / 2, Pmode)};
+  emit_vlmax_insn (icode, SLIDEUP_OP_MERGE, ops);
+}
+
+/* Use merge approach to merge a scalar into a vector.
+     v = {a, a, a, a, a, a, b, b}
+
+     v1 = {a, a, a, a, a, a, a, a}
+     scalar = b
+     mask = {0, 0, 0, 0, 0, 0, 1, 1}
+*/
+static void
+expand_vector_init_merge_combine_sequence (rtx target,
+					   const rvv_builder &builder)
+{
+  machine_mode mode = GET_MODE (target);
+  machine_mode imode = builder.int_mode ();
+  machine_mode mmode = builder.mask_mode ();
+  int nelts = builder.full_nelts ().to_constant ();
+  int leading_ndups = builder.count_dups (0, nelts - 1, 1);
+  if ((leading_ndups > 255 && GET_MODE_INNER (imode) == QImode)
+      || riscv_get_v_regno_alignment (imode) > 1)
+    imode = get_vector_mode (HImode, nelts).require ();
+
+  /* Generate vid = { 0, 1, 2, ..., n }.  */
+  rtx vid = gen_reg_rtx (imode);
+  expand_vec_series (vid, const0_rtx, const1_rtx);
+
+  /* Generate mask.  */
+  rtx mask = gen_reg_rtx (mmode);
+  insn_code icode = code_for_pred_cmp_scalar (imode);
+  rtx index = gen_int_mode (leading_ndups - 1, builder.inner_int_mode ());
+  rtx dup_rtx = gen_rtx_VEC_DUPLICATE (imode, index);
+  /* vmsgtu.vi/vmsgtu.vx.  */
+  rtx cmp = gen_rtx_fmt_ee (GTU, mmode, vid, dup_rtx);
+  rtx sel = builder.elt (nelts - 1);
+  rtx mask_ops[] = {mask, cmp, vid, index};
+  emit_vlmax_insn (icode, COMPARE_OP, mask_ops);
+
+  /* Duplicate the first elements.  */
+  rtx dup = expand_vector_broadcast (mode, builder.elt (0));
+  /* Merge scalar into vector according to mask.  */
+  rtx merge_ops[] = {target, dup, sel, mask};
+  icode = code_for_pred_merge_scalar (mode);
+  emit_vlmax_insn (icode, MERGE_OP, merge_ops);
+}
+
+/* Subroutine of expand_vec_init to handle case
+   when all trailing elements of builder are same.
+   This works as follows:
+   (a) Use expand_insn interface to broadcast last vector element in TARGET.
+   (b) Insert remaining elements in TARGET using insr.
+
+   ??? The heuristic used is to do above if number of same trailing elements
+   is greater than leading_ndups, loosely based on
+   heuristic from mostly_zeros_p.  May need fine-tuning.  */
+
+static bool
+expand_vector_init_trailing_same_elem (rtx target,
+				       const rtx_vector_builder &builder,
+				       int nelts_reqd)
+{
+  int leading_ndups = builder.count_dups (0, nelts_reqd - 1, 1);
+  int trailing_ndups = builder.count_dups (nelts_reqd - 1, -1, -1);
+  machine_mode mode = GET_MODE (target);
+
+  if (trailing_ndups > leading_ndups)
+    {
+      rtx dup = expand_vector_broadcast (mode, builder.elt (nelts_reqd - 1));
+      for (int i = nelts_reqd - trailing_ndups - 1; i >= 0; i--)
+	{
+	  unsigned int unspec
+	    = FLOAT_MODE_P (mode) ? UNSPEC_VFSLIDE1UP : UNSPEC_VSLIDE1UP;
+	  insn_code icode = code_for_pred_slide (unspec, mode);
+	  rtx tmp = gen_reg_rtx (mode);
+	  rtx ops[] = {tmp, dup, builder.elt (i)};
+	  emit_vlmax_insn (icode, BINARY_OP, ops);
+	  /* slide1up need source and dest to be different REG.  */
+	  dup = tmp;
+	}
+
+      emit_move_insn (target, dup);
+      return true;
+    }
+
+  return false;
 }
 
 /* Initialize register TARGET from the elements in PARALLEL rtx VALS.  */
@@ -2162,13 +2345,44 @@ expand_vec_init (rtx target, rtx vals)
 	  return;
 	}
 
-      /* TODO: We will support more Initialization of vector in the future.  */
+      /* Case 3: Optimize combine sequence.
+	 E.g. v = {a, a, a, a, a, a, a, a, b, b, b, b, b, b, b, b}.
+	 We can combine:
+	   v1 = {a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a}.
+	 and
+	   v2 = {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b}.
+	 by slideup.  */
+      if (v.combine_sequence_use_slideup_profitable_p ())
+	{
+	  expand_vector_init_slideup_combine_sequence (target, v);
+	  return;
+	}
+
+      /* Case 4: Optimize combine sequence.
+	 E.g. v = {a, a, a, a, a, a, a, a, a, a, a, b, b, b, b, b}.
+
+	 Generate vector:
+	   v = {a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a}.
+
+	 Generate mask:
+	   mask = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1}.
+
+	 Merge b into v by mask:
+	   v = {a, a, a, a, a, a, a, a, a, a, a, b, b, b, b, b}.  */
+      if (v.combine_sequence_use_merge_profitable_p ())
+	{
+	  expand_vector_init_merge_combine_sequence (target, v);
+	  return;
+	}
     }
 
-  /* Handle common situation by vslide1down. This function can handle any
-     situation of vec_init<mode>. Only the cases that are not optimized above
-     will fall through here.  */
-  expand_vector_init_insert_elems (target, v, nelts);
+  /* Optimize trailing same elements sequence:
+      v = {y, y2, y3, y4, y5, x, x, x, x, x, x, x, x, x, x, x};  */
+  if (!expand_vector_init_trailing_same_elem (target, v, nelts))
+    /* Handle common situation by vslide1down. This function can handle any
+       situation of vec_init<mode>. Only the cases that are not optimized above
+       will fall through here.  */
+    expand_vector_init_insert_elems (target, v, nelts);
 }
 
 /* Get insn code for corresponding comparison.  */
@@ -3214,7 +3428,8 @@ needs_fp_rounding (unsigned icode, machine_mode mode)
 	 && icode != maybe_code_for_pred_widen (FLOAT, mode)
 	 && icode != maybe_code_for_pred_widen (UNSIGNED_FLOAT, mode)
 	 /* vfsgnj */
-	 && icode != maybe_code_for_pred (UNSPEC_VCOPYSIGN, mode);
+	 && icode != maybe_code_for_pred (UNSPEC_VCOPYSIGN, mode)
+	 && icode != maybe_code_for_pred_mov (mode);
 }
 
 /* Subroutine to expand COND_LEN_* patterns.  */
@@ -3948,6 +4163,16 @@ emit_vec_widden_cvt_x_f (rtx op_dest, rtx op_src, insn_type type,
 }
 
 static void
+emit_vec_widden_cvt_f_f (rtx op_dest, rtx op_src, insn_type type,
+			 machine_mode vec_mode)
+{
+  rtx ops[] = {op_dest, op_src};
+  insn_code icode = code_for_pred_extend (vec_mode);
+
+  emit_vlmax_insn (icode, type, ops);
+}
+
+static void
 emit_vec_cvt_f_x (rtx op_dest, rtx op_src, rtx mask,
 		  insn_type type, machine_mode vec_mode)
 {
@@ -4141,8 +4366,10 @@ expand_vec_roundeven (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
 
 /* Handling the rounding from floating-point to int/long/long long.  */
 static void
-emit_vec_rounding_to_integer (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
-			      machine_mode vec_int_mode, insn_type type)
+emit_vec_rounding_to_integer (rtx op_0, rtx op_1, insn_type type,
+			      machine_mode vec_fp_mode,
+			      machine_mode vec_int_mode,
+			      machine_mode vec_bridge_mode = E_VOIDmode)
 {
   poly_uint16 vec_fp_size = GET_MODE_SIZE (vec_fp_mode);
   poly_uint16 vec_int_size = GET_MODE_SIZE (vec_int_mode);
@@ -4151,48 +4378,53 @@ emit_vec_rounding_to_integer (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
     emit_vec_cvt_x_f (op_0, op_1, type, vec_fp_mode);
   else if (maybe_eq (vec_fp_size, vec_int_size * 2)) /* DF => SI.  */
     emit_vec_narrow_cvt_x_f (op_0, op_1, type, vec_fp_mode);
-  else if (maybe_eq (vec_fp_size * 2, vec_int_size)) /* SF => DI.  */
+  else if (maybe_eq (vec_fp_size * 2, vec_int_size)) /* SF => DI, HF => SI.  */
     emit_vec_widden_cvt_x_f (op_0, op_1, type, vec_int_mode);
-  else /* HF requires additional middle-end support.  */
+  else if (maybe_eq (vec_fp_size * 4, vec_int_size)) /* HF => DI.  */
+    {
+      gcc_assert (vec_bridge_mode != E_VOIDmode);
+
+      rtx op_sf = gen_reg_rtx (vec_bridge_mode);
+
+      /* Step-1: HF => SF, no rounding here.  */
+      emit_vec_widden_cvt_f_f (op_sf, op_1, UNARY_OP, vec_bridge_mode);
+      /* Step-2: SF => DI.  */
+      emit_vec_widden_cvt_x_f (op_0, op_sf, type, vec_int_mode);
+    }
+  else
     gcc_unreachable ();
 }
 
 void
 expand_vec_lrint (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
-		  machine_mode vec_int_mode)
+		  machine_mode vec_int_mode, machine_mode vec_bridge_mode)
 {
-  emit_vec_rounding_to_integer (op_0, op_1, vec_fp_mode, vec_int_mode,
-				UNARY_OP_FRM_DYN);
+  emit_vec_rounding_to_integer (op_0, op_1, UNARY_OP_FRM_DYN, vec_fp_mode,
+				vec_int_mode, vec_bridge_mode);
 }
 
 void
 expand_vec_lround (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
-		   machine_mode vec_long_mode)
+		   machine_mode vec_int_mode, machine_mode vec_bridge_mode)
 {
-  gcc_assert (known_eq (GET_MODE_SIZE (vec_fp_mode),
-			GET_MODE_SIZE (vec_long_mode)));
-
-  emit_vec_cvt_x_f (op_0, op_1, UNARY_OP_FRM_RMM, vec_fp_mode);
+  emit_vec_rounding_to_integer (op_0, op_1, UNARY_OP_FRM_RMM, vec_fp_mode,
+				vec_int_mode, vec_bridge_mode);
 }
 
 void
 expand_vec_lceil (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
-		  machine_mode vec_long_mode)
+		  machine_mode vec_int_mode)
 {
-  gcc_assert (known_eq (GET_MODE_SIZE (vec_fp_mode),
-			GET_MODE_SIZE (vec_long_mode)));
-
-  emit_vec_cvt_x_f (op_0, op_1, UNARY_OP_FRM_RUP, vec_fp_mode);
+  emit_vec_rounding_to_integer (op_0, op_1, UNARY_OP_FRM_RUP, vec_fp_mode,
+				vec_int_mode);
 }
 
 void
 expand_vec_lfloor (rtx op_0, rtx op_1, machine_mode vec_fp_mode,
-		   machine_mode vec_long_mode)
+		   machine_mode vec_int_mode)
 {
-  gcc_assert (known_eq (GET_MODE_SIZE (vec_fp_mode),
-			GET_MODE_SIZE (vec_long_mode)));
-
-  emit_vec_cvt_x_f (op_0, op_1, UNARY_OP_FRM_RDN, vec_fp_mode);
+  emit_vec_rounding_to_integer (op_0, op_1, UNARY_OP_FRM_RDN, vec_fp_mode,
+				vec_int_mode);
 }
 
 /* Vectorize popcount by the Wilkes-Wheeler-Gill algorithm that libgcc uses as
@@ -4359,6 +4591,26 @@ count_regno_occurrences (rtx_insn *rinsn, unsigned int regno)
     if (refers_to_regno_p (regno, recog_data.operand[i]))
       count++;
   return count;
+}
+
+/* Return true if the OP can be directly broadcasted.  */
+bool
+can_be_broadcasted_p (rtx op)
+{
+  machine_mode mode = GET_MODE (op);
+  /* We don't allow RA (register allocation) reload generate
+    (vec_duplicate:DI reg) in RV32 system wheras we allow
+    (vec_duplicate:DI mem) in RV32 system.  */
+  if (!can_create_pseudo_p () && !FLOAT_MODE_P (mode)
+      && maybe_gt (GET_MODE_SIZE (mode), GET_MODE_SIZE (Pmode))
+      && !satisfies_constraint_Wdm (op))
+    return false;
+
+  if (satisfies_constraint_K (op) || register_operand (op, mode)
+      || satisfies_constraint_Wdm (op) || rtx_equal_p (op, CONST0_RTX (mode)))
+    return true;
+
+  return can_create_pseudo_p () && nonmemory_operand (op, mode);
 }
 
 } // namespace riscv_vector

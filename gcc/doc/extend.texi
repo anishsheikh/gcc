@@ -843,7 +843,7 @@ Thus, @code{array (pointer (char), 4)} is the type of arrays of 4
 pointers to @code{char}.
 @end itemize
 
-The ISO C2X operator @code{typeof_unqual} is available in ISO C2X mode
+The ISO C23 operator @code{typeof_unqual} is available in ISO C23 mode
 and its result is the non-atomic unqualified version of what @code{typeof}
 operator returns.  Alternate spelling @code{__typeof_unqual__} is
 available in all C modes and provides non-atomic unqualified version of
@@ -2497,7 +2497,7 @@ hack ((union foo) x);
 @cindex code, mixed with declarations
 
 ISO C99 and ISO C++ allow declarations and code to be freely mixed
-within compound statements.  ISO C2X allows labels to be
+within compound statements.  ISO C23 allows labels to be
 placed before declarations and at the end of a compound statement.
 As an extension, GNU C also allows all this in C90 mode.  For example,
 you could do:
@@ -6295,7 +6295,65 @@ void f (void) __attribute__ ((interrupt ("user")));
 Permissible values for this parameter are @code{user}, @code{supervisor},
 and @code{machine}.  If there is no parameter, then it defaults to
 @code{machine}.
+
 @end table
+
+The following target-specific function attributes are available for the
+RISC-V target.  For the most part, these options mirror the behavior of
+similar command-line options (@pxref{RISC-V Options}), but on a
+per-function basis.
+
+@table @code
+@cindex @code{arch=} function attribute, RISC-V
+@item arch=
+Specifies the architecture version and architectural extensions to use
+for this function.  The behavior and permissible arguments are the same as
+for the @option{-march=} command-line option, in addtion, it also support
+extension enablement list, a list of extension name and prefixed with @code{+},
+like @code{arch=+zba} means enable @code{zba} extension.
+Multiple extension can be enabled by separating them with a comma.  For example:
+@code{arch=+zba,+zbb}.
+
+@cindex @code{tune=} function attribute, RISC-V
+@item tune=
+Specifies the core for which to tune the performance of this function.
+The behavior and permissible arguments are the same as for the @option{-mtune=}
+command-line option.
+
+@cindex @code{cpu=} function attribute, RISC-V
+@item cpu=
+Specifies the core for which to tune the performance of this function and also
+whose architectural features to use.  The behavior and valid arguments are the
+same as for the @option{-mcpu=} command-line option.
+
+@end table
+
+The above target attributes can be specified as follows:
+
+@smallexample
+__attribute__((target("@var{attr-string}")))
+int
+f (int a)
+@{
+  return a + 5;
+@}
+@end smallexample
+
+where @code{@var{attr-string}} is one of the attribute strings specified above.
+
+Multiple target function attributes can be specified by separating them with
+a semicolon.  For example:
+@smallexample
+__attribute__((target("arch=+zba,+zbb;tune=rocket")))
+int
+foo (int a)
+@{
+  return a + 5;
+@}
+@end smallexample
+
+is valid and compiles function @code{foo} with @code{zba}
+and @code{zbb} extensions and tunes it for @code{rocket}.
 
 @node RL78 Function Attributes
 @subsection RL78 Function Attributes
@@ -9443,8 +9501,8 @@ default language dialect for both C and C++.  More specifically, this
 syntax was first introduced in the C++11 language standard
 (@pxref{Standards}), and is supported by GCC in C++ code with
 @option{-std=c++11} or @option{-std=gnu++11} or later.  It is also
-part of the C2x language standard and is supported when compiling C
-code with @option{-std=c2x} or @option{-std=gnu17} or later.
+part of the C23 language standard and is supported when compiling C
+code with @option{-std=c23} or @option{-std=gnu17} or later.
 
 When using GNU-specific attributes in the standard syntax, you must
 prefix their names with @samp{gnu::}, such as @code{gnu::section}.
@@ -12051,7 +12109,7 @@ In C, writing:
 @end smallexample
 
 suppresses warnings about using @samp{[[]]} attributes in C versions
-that predate C2X@.  Since the scope token @samp{::} is not a single
+that predate C23@.  Since the scope token @samp{::} is not a single
 lexing token in earlier versions of C, this construct also allows two colons
 to be used in place of @code{::}.  GCC does not check whether the two
 colons are immediately adjacent.
@@ -14296,14 +14354,16 @@ an error if there is no such function.
 
 @defbuiltin{int __builtin_constant_p (@var{exp})}
 You can use the built-in function @code{__builtin_constant_p} to
-determine if a value is known to be constant at compile time and hence
-that GCC can perform constant-folding on expressions involving that
-value.  The argument of the function is the value to test.  The function
+determine if the expression @var{exp} is known to be constant at
+compile time and hence that GCC can perform constant-folding on expressions
+involving that value.  The argument of the function is the expression to test.
+The expression is not evaluated, side-effects are discarded.  The function
 returns the integer 1 if the argument is known to be a compile-time
-constant and 0 if it is not known to be a compile-time constant.  A
-return of 0 does not indicate that the value is @emph{not} a constant,
-but merely that GCC cannot prove it is a constant with the specified
-value of the @option{-O} option.
+constant and 0 if it is not known to be a compile-time constant.
+Any expression that has side-effects makes the function return 0.
+A return of 0 does not indicate that the expression is @emph{not} a constant,
+but merely that GCC cannot prove it is a constant within the constraints
+of the active set of optimization options.
 
 You typically use this function in an embedded application where
 memory is a critical resource.  If you have some complex calculation,
@@ -14956,6 +15016,48 @@ Similar to @code{__builtin_popcount}, except the argument type is
 @defbuiltin{int __builtin_parityll (unsigned long long)}
 Similar to @code{__builtin_parity}, except the argument type is
 @code{unsigned long long}.
+@enddefbuiltin
+
+@defbuiltin{int __builtin_ffsg (...)}
+Similar to @code{__builtin_ffs}, except the argument is type-generic
+signed integer (standard, extended or bit-precise).  No integral argument
+promotions are performed on the argument.
+@enddefbuiltin
+
+@defbuiltin{int __builtin_clzg (...)}
+Similar to @code{__builtin_clz}, except the argument is type-generic
+unsigned integer (standard, extended or bit-precise) and there is
+optional second argument with int type.  No integral argument promotions
+are performed on the first argument.  If two arguments are specified,
+and first argument is 0, the result is the second argument.  If only
+one argument is specified and it is 0, the result is undefined.
+@enddefbuiltin
+
+@defbuiltin{int __builtin_ctzg (...)}
+Similar to @code{__builtin_ctz}, except the argument is type-generic
+unsigned integer (standard, extended or bit-precise) and there is
+optional second argument with int type.  No integral argument promotions
+are performed on the first argument.  If two arguments are specified,
+and first argument is 0, the result is the second argument.  If only
+one argument is specified and it is 0, the result is undefined.
+@enddefbuiltin
+
+@defbuiltin{int __builtin_clrsbg (...)}
+Similar to @code{__builtin_clrsb}, except the argument is type-generic
+signed integer (standard, extended or bit-precise).  No integral argument
+promotions are performed on the argument.
+@enddefbuiltin
+
+@defbuiltin{int __builtin_popcountg (...)}
+Similar to @code{__builtin_popcount}, except the argument is type-generic
+unsigned integer (standard, extended or bit-precise).  No integral argument
+promotions are performed on the argument.
+@enddefbuiltin
+
+@defbuiltin{int __builtin_parityg (...)}
+Similar to @code{__builtin_parity}, except the argument is type-generic
+unsigned integer (standard, extended or bit-precise).  No integral argument
+promotions are performed on the argument.
 @enddefbuiltin
 
 @defbuiltin{double __builtin_powi (double, int)}
@@ -18427,7 +18529,6 @@ These built-in functions are available for the Nvidia PTX target:
 
 @defbuiltin{unsigned int __builtin_nvptx_brev (unsigned int @var{x})}
 Reverse the bit order of a 32-bit unsigned integer.
-Disable global interrupt.
 @enddefbuiltin
 
 @defbuiltin{unsigned long long __builtin_nvptx_brevll (unsigned long long @var{x})}
@@ -24748,7 +24849,7 @@ restored.
 @item #pragma GCC diagnostic ignored_attributes
 
 Similarly to @option{-Wno-attributes=}, this pragma allows users to suppress
-warnings about unknown scoped attributes (in C++11 and C2X).  For example,
+warnings about unknown scoped attributes (in C++11 and C23).  For example,
 @code{#pragma GCC diagnostic ignored_attributes "vendor::attr"} disables
 warning about the following declaration:
 

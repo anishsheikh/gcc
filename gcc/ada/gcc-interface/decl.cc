@@ -1145,6 +1145,18 @@ gnat_to_gnu_entity (Entity_Id gnat_entity, tree gnu_expr, bool definition)
 		   the entity as indirect reference to the renamed object.  */
 		if (Materialize_Entity (gnat_entity))
 		  {
+		    /* If this is an aliased object with an unconstrained array
+		       nominal subtype, we make its type a thin reference, i.e.
+		       the reference counterpart of a thin pointer, exactly as
+		       we would have done in the non-renaming case below.  */
+		    if (Is_Constr_Subt_For_UN_Aliased (gnat_type)
+			&& Is_Array_Type (gnat_und_type)
+			&& !type_annotate_only)
+		      {
+			tree gnu_array
+			  = gnat_to_gnu_type (Base_Type (gnat_type));
+			gnu_type = TYPE_OBJECT_RECORD_TYPE (gnu_array);
+		      }
 		    gnu_type = build_reference_type (gnu_type);
 		    const_flag = true;
 		    volatile_flag = false;
@@ -6317,6 +6329,12 @@ gnat_to_gnu_subprog_type (Entity_Id gnat_subprog, bool definition,
 
 	  if (debug_info_p)
 	    rest_of_record_type_compilation (gnu_cico_return_type);
+
+	  /* Declare it now since it will never be declared otherwise.  This
+	     is necessary to ensure that its subtrees are properly marked.  */
+	  create_type_decl (TYPE_NAME (gnu_cico_return_type),
+			    gnu_cico_return_type,
+			    true, debug_info_p, gnat_subprog);
 	}
 
       gnu_return_type = gnu_cico_return_type;

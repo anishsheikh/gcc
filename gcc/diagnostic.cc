@@ -149,28 +149,76 @@ diagnostic_set_caret_max_width (diagnostic_context *context, int value)
   context->m_source_printing.max_width = value;
 }
 
+void
+diagnostic_option_classifier::init (int n_opts)
+{
+  m_n_opts = n_opts;
+  m_classify_diagnostic = XNEWVEC (diagnostic_t, n_opts);
+  for (int i = 0; i < n_opts; i++)
+    m_classify_diagnostic[i] = DK_UNSPECIFIED;
+  m_push_list = nullptr;
+  m_n_push = 0;
+}
+
+void
+diagnostic_option_classifier::fini ()
+{
+  XDELETEVEC (m_classify_diagnostic);
+  m_classify_diagnostic = nullptr;
+  free (m_push_list);
+  m_n_push = 0;
+}
+
+/* Save all diagnostic classifications in a stack.  */
+
+void
+diagnostic_option_classifier::push ()
+{
+  m_push_list = (int *) xrealloc (m_push_list, (m_n_push + 1) * sizeof (int));
+  m_push_list[m_n_push ++] = m_n_classification_history;
+}
+
+/* Restore the topmost classification set off the stack.  If the stack
+   is empty, revert to the state based on command line parameters.  */
+
+void
+diagnostic_option_classifier::pop (location_t where)
+{
+  int jump_to;
+
+  if (m_n_push)
+    jump_to = m_push_list [-- m_n_push];
+  else
+    jump_to = 0;
+
+  const int i = m_n_classification_history;
+  m_classification_history =
+    (diagnostic_classification_change_t *) xrealloc (m_classification_history, (i + 1)
+						     * sizeof (diagnostic_classification_change_t));
+  m_classification_history[i].location = where;
+  m_classification_history[i].option = jump_to;
+  m_classification_history[i].kind = DK_POP;
+  m_n_classification_history ++;
+}
+
 /* Initialize the diagnostic message outputting machinery.  */
 
 void
 diagnostic_context::initialize (int n_opts)
 {
-  int i;
-
   /* Allocate a basic pretty-printer.  Clients will replace this a
      much more elaborated pretty-printer if they wish.  */
   this->printer = XNEW (pretty_printer);
   new (this->printer) pretty_printer ();
 
-  m_file_cache = nullptr;
+  m_file_cache = new file_cache ();
   memset (m_diagnostic_count, 0, sizeof m_diagnostic_count);
   m_warning_as_error_requested = false;
   m_n_opts = n_opts;
-  m_classify_diagnostic = XNEWVEC (diagnostic_t, n_opts);
-  for (i = 0; i < n_opts; i++)
-    m_classify_diagnostic[i] = DK_UNSPECIFIED;
+  m_option_classifier.init (n_opts);
   m_source_printing.enabled = false;
   diagnostic_set_caret_max_width (this, pp_line_cutoff (this->printer));
-  for (i = 0; i < rich_location::STATICALLY_ALLOCATED_RANGES; i++)
+  for (int i = 0; i < rich_location::STATICALLY_ALLOCATED_RANGES; i++)
     m_source_printing.caret_chars[i] = '^';
   m_show_cwe = false;
   m_show_rules = false;
@@ -187,13 +235,13 @@ diagnostic_context::initialize (int n_opts)
   m_warn_system_headers = false;
   m_max_errors = 0;
   m_internal_error = nullptr;
-  m_text_callbacks.begin_diagnostic = default_diagnostic_starter;
-  m_text_callbacks.start_span = default_diagnostic_start_span_fn;
-  m_text_callbacks.end_diagnostic = default_diagnostic_finalizer;
-  m_option_enabled = nullptr;
-  m_option_state = nullptr;
-  m_option_name = nullptr;
-  m_get_option_url = nullptr;
+  m_text_callbacks.m_begin_diagnostic = default_diagnostic_starter;
+  m_text_callbacks.m_start_span = default_diagnostic_start_span_fn;
+  m_text_callbacks.m_end_diagnostic = default_diagnostic_finalizer;
+  m_option_callbacks.m_option_enabled_cb = nullptr;
+  m_option_callbacks.m_option_state = nullptr;
+  m_option_callbacks.m_make_option_name_cb = nullptr;
+  m_option_callbacks.m_make_option_url_cb = nullptr;
   m_urlifier = nullptr;
   m_last_location = UNKNOWN_LOCATION;
   m_last_module = nullptr;
@@ -304,8 +352,6 @@ diagnostic_context::
 initialize_input_context (diagnostic_input_charset_callback ccb,
 			  bool should_skip_bom)
 {
-  if (!m_file_cache)
-    m_file_cache = new file_cache;
   m_file_cache->initialize_input_context (ccb, should_skip_bom);
 }
 
@@ -326,8 +372,7 @@ diagnostic_context::finish ()
   delete m_file_cache;
   m_file_cache = nullptr;
 
-  XDELETEVEC (m_classify_diagnostic);
-  m_classify_diagnostic = nullptr;
+  m_option_classifier.fini ();
 
   /* diagnostic_context::initialize allocates this->printer using XNEW
      and placement-new.  */
@@ -374,10 +419,34 @@ diagnostic_context::set_client_data_hooks (diagnostic_client_data_hooks *hooks)
 }
 
 void
+diagnostic_context::
+set_option_hooks (diagnostic_option_enabled_cb option_enabled_cb,
+		  void *option_state,
+		  diagnostic_make_option_name_cb make_option_name_cb,
+		  diagnostic_make_option_url_cb make_option_url_cb,
+		  unsigned lang_mask)
+{
+  m_option_callbacks.m_option_enabled_cb = option_enabled_cb;
+  m_option_callbacks.m_option_state = option_state;
+  m_option_callbacks.m_make_option_name_cb = make_option_name_cb;
+  m_option_callbacks.m_make_option_url_cb = make_option_url_cb;
+  m_option_callbacks.m_lang_mask = lang_mask;
+}
+
+void
+diagnostic_context::set_urlifier (urlifier *urlifier)
+{
+  /* Ideally we'd use a std::unique_ptr here.  */
+  delete m_urlifier;
+  m_urlifier = urlifier;
+}
+
+void
 diagnostic_context::create_edit_context ()
 {
   delete m_edit_context_ptr;
-  m_edit_context_ptr = new edit_context ();
+  gcc_assert (m_file_cache);
+  m_edit_context_ptr = new edit_context (*m_file_cache);
 }
 
 /* Initialize DIAGNOSTIC, where the message MSG has already been
@@ -430,7 +499,8 @@ diagnostic_get_color_for_kind (diagnostic_t kind)
    Return -1 if the column is invalid (<= 0).  */
 
 static int
-convert_column_unit (enum diagnostics_column_unit column_unit,
+convert_column_unit (file_cache &fc,
+		     enum diagnostics_column_unit column_unit,
 		     int tabstop,
 		     expanded_location s)
 {
@@ -445,7 +515,7 @@ convert_column_unit (enum diagnostics_column_unit column_unit,
     case DIAGNOSTICS_COLUMN_UNIT_DISPLAY:
       {
 	cpp_char_column_policy policy (tabstop, cpp_wcwidth);
-	return location_compute_display_column (s, policy);
+	return location_compute_display_column (fc, s, policy);
       }
 
     case DIAGNOSTICS_COLUMN_UNIT_BYTE:
@@ -459,7 +529,8 @@ convert_column_unit (enum diagnostics_column_unit column_unit,
 int
 diagnostic_context::converted_column (expanded_location s) const
 {
-  int one_based_col = convert_column_unit (m_column_unit, m_tabstop, s);
+  int one_based_col = convert_column_unit (get_file_cache (),
+					   m_column_unit, m_tabstop, s);
   if (one_based_col <= 0)
     return -1;
   return one_based_col + (m_column_origin - 1);
@@ -651,9 +722,9 @@ diagnostic_context::check_max_errors (bool flush)
   if (!m_max_errors)
     return;
 
-  int count = (diagnostic_kind_count (this, DK_ERROR)
-	       + diagnostic_kind_count (this, DK_SORRY)
-	       + diagnostic_kind_count (this, DK_WERROR));
+  int count = (m_diagnostic_count[DK_ERROR]
+	       + m_diagnostic_count[DK_SORRY]
+	       + m_diagnostic_count[DK_WERROR]);
 
   if (count >= m_max_errors)
     {
@@ -1044,9 +1115,11 @@ default_diagnostic_finalizer (diagnostic_context *context,
    range.  If OPTION_INDEX is zero, the new setting is for all the
    diagnostics.  */
 diagnostic_t
-diagnostic_context::classify_diagnostic (int option_index,
-					 diagnostic_t new_kind,
-					 location_t where)
+diagnostic_option_classifier::
+classify_diagnostic (const diagnostic_context *context,
+		     int option_index,
+		     diagnostic_t new_kind,
+		     location_t where)
 {
   diagnostic_t old_kind;
 
@@ -1066,10 +1139,8 @@ diagnostic_context::classify_diagnostic (int option_index,
       /* Record the command-line status, so we can reset it back on DK_POP. */
       if (old_kind == DK_UNSPECIFIED)
 	{
-	  old_kind = !m_option_enabled (option_index,
-					m_lang_mask,
-					m_option_state)
-	    ? DK_IGNORED : (m_warning_as_error_requested
+	  old_kind = !context->option_enabled_p (option_index)
+	    ? DK_IGNORED : (context->warning_as_error_requested_p ()
 			    ? DK_ERROR : DK_WARNING);
 	  m_classify_diagnostic[option_index] = old_kind;
 	}
@@ -1094,37 +1165,6 @@ diagnostic_context::classify_diagnostic (int option_index,
     m_classify_diagnostic[option_index] = new_kind;
 
   return old_kind;
-}
-
-/* Save all diagnostic classifications in a stack.  */
-void
-diagnostic_context::push_diagnostics (location_t where ATTRIBUTE_UNUSED)
-{
-  m_push_list = (int *) xrealloc (m_push_list, (m_n_push + 1) * sizeof (int));
-  m_push_list[m_n_push ++] = m_n_classification_history;
-}
-
-/* Restore the topmost classification set off the stack.  If the stack
-   is empty, revert to the state based on command line parameters.  */
-void
-diagnostic_context::pop_diagnostics (location_t where)
-{
-  int jump_to;
-  int i;
-
-  if (m_n_push)
-    jump_to = m_push_list [-- m_n_push];
-  else
-    jump_to = 0;
-
-  i = m_n_classification_history;
-  m_classification_history =
-    (diagnostic_classification_change_t *) xrealloc (m_classification_history, (i + 1)
-						     * sizeof (diagnostic_classification_change_t));
-  m_classification_history[i].location = where;
-  m_classification_history[i].option = jump_to;
-  m_classification_history[i].kind = DK_POP;
-  m_n_classification_history ++;
 }
 
 /* Helper function for print_parseable_fixits.  Print TEXT to PP, obeying the
@@ -1179,7 +1219,8 @@ print_escaped_string (pretty_printer *pp, const char *text)
    Use TABSTOP when handling DIAGNOSTICS_COLUMN_UNIT_DISPLAY.  */
 
 static void
-print_parseable_fixits (pretty_printer *pp, rich_location *richloc,
+print_parseable_fixits (file_cache &fc,
+			pretty_printer *pp, rich_location *richloc,
 			enum diagnostics_column_unit column_unit,
 			int tabstop)
 {
@@ -1200,9 +1241,9 @@ print_parseable_fixits (pretty_printer *pp, rich_location *richloc,
       location_t next_loc = hint->get_next_loc ();
       expanded_location next_exploc = expand_location (next_loc);
       int start_col
-	= convert_column_unit (column_unit, tabstop, start_exploc);
+	= convert_column_unit (fc, column_unit, tabstop, start_exploc);
       int next_col
-	= convert_column_unit (column_unit, tabstop, next_exploc);
+	= convert_column_unit (fc, column_unit, tabstop, next_exploc);
       pp_printf (pp, ":{%i:%i-%i:%i}:",
 		 start_exploc.line, start_col,
 		 next_exploc.line, next_col);
@@ -1238,14 +1279,14 @@ diagnostic_context::get_any_inlining_info (diagnostic_info *diagnostic)
 /* Update the kind of DIAGNOSTIC based on its location(s), including
    any of those in its inlining stack, relative to any
      #pragma GCC diagnostic
-   directives recorded within CONTEXT.
+   directives recorded within this object.
 
    Return the new kind of DIAGNOSTIC if it was updated, or DK_UNSPECIFIED
    otherwise.  */
 
 diagnostic_t
-diagnostic_context::
-update_effective_level_from_pragmas (diagnostic_info *diagnostic)
+diagnostic_option_classifier::
+update_effective_level_from_pragmas (diagnostic_info *diagnostic) const
 {
   if (m_n_classification_history <= 0)
     return DK_UNSPECIFIED;
@@ -1384,18 +1425,12 @@ void
 diagnostic_context::print_option_information (const diagnostic_info &diagnostic,
 					      diagnostic_t orig_diag_kind)
 {
-  char *option_text;
-
-  option_text = m_option_name (this, diagnostic.option_index,
-			       orig_diag_kind, diagnostic.kind);
-
-  if (option_text)
+  if (char *option_text = make_option_name (diagnostic.option_index,
+					    orig_diag_kind, diagnostic.kind))
     {
-      char *option_url = NULL;
-      if (m_get_option_url
-	  && this->printer->url_format != URL_FORMAT_NONE)
-	option_url = m_get_option_url (this,
-				       diagnostic.option_index);
+      char *option_url = nullptr;
+      if (this->printer->url_format != URL_FORMAT_NONE)
+	option_url = make_option_url (diagnostic.option_index);
       pretty_printer * const pp = this->printer;
       pp_string (pp, " [");
       pp_string (pp, colorize_start (pp_show_color (pp),
@@ -1430,20 +1465,18 @@ diagnostic_context::diagnostic_enabled (diagnostic_info *diagnostic)
 
   /* This tests if the user provided the appropriate -Wfoo or
      -Wno-foo option.  */
-  if (! m_option_enabled (diagnostic->option_index,
-			  m_lang_mask,
-			  m_option_state))
+  if (!option_enabled_p (diagnostic->option_index))
     return false;
 
   /* This tests for #pragma diagnostic changes.  */
-  diagnostic_t diag_class = update_effective_level_from_pragmas (diagnostic);
+  diagnostic_t diag_class
+    = m_option_classifier.update_effective_level_from_pragmas (diagnostic);
 
   /* This tests if the user provided the appropriate -Werror=foo
      option.  */
   if (diag_class == DK_UNSPECIFIED
-      && (m_classify_diagnostic[diagnostic->option_index]
-	  != DK_UNSPECIFIED))
-    diagnostic->kind = m_classify_diagnostic[diagnostic->option_index];
+      && !option_unspecified_p (diagnostic->option_index))
+    diagnostic->kind = m_option_classifier.get_current_override (diagnostic->option_index);
 
   /* This allows for future extensions, like temporarily disabling
      warnings for ranges of source code.  */
@@ -1547,8 +1580,8 @@ diagnostic_context::report_diagnostic (diagnostic_info *diagnostic)
 	 error has already occurred.  This is counteracted by
 	 abort_on_error.  */
       if (!CHECKING_P
-	  && (diagnostic_kind_count (this, DK_ERROR) > 0
-	      || diagnostic_kind_count (this, DK_SORRY) > 0)
+	  && (m_diagnostic_count[DK_ERROR] > 0
+	      || m_diagnostic_count[DK_SORRY] > 0)
 	  && !m_abort_on_error)
 	{
 	  expanded_location s 
@@ -1563,9 +1596,9 @@ diagnostic_context::report_diagnostic (diagnostic_info *diagnostic)
 			     diagnostic->message.m_args_ptr);
     }
   if (diagnostic->kind == DK_ERROR && orig_diag_kind == DK_WARNING)
-    ++diagnostic_kind_count (this, DK_WERROR);
+    ++m_diagnostic_count[DK_WERROR];
   else
-    ++diagnostic_kind_count (this, diagnostic->kind);
+    ++m_diagnostic_count[diagnostic->kind];
 
   /* Is this the initial diagnostic within the stack of groups?  */
   if (m_diagnostic_groups.m_emission_count == 0)
@@ -1587,13 +1620,15 @@ diagnostic_context::report_diagnostic (diagnostic_info *diagnostic)
     default:
       break;
     case EXTRA_DIAGNOSTIC_OUTPUT_fixits_v1:
-      print_parseable_fixits (this->printer, diagnostic->richloc,
+      print_parseable_fixits (get_file_cache (),
+			      this->printer, diagnostic->richloc,
 			      DIAGNOSTICS_COLUMN_UNIT_BYTE,
 			      m_tabstop);
       pp_flush (this->printer);
       break;
     case EXTRA_DIAGNOSTIC_OUTPUT_fixits_v2:
-      print_parseable_fixits (this->printer, diagnostic->richloc,
+      print_parseable_fixits (get_file_cache (),
+			      this->printer, diagnostic->richloc,
 			      DIAGNOSTICS_COLUMN_UNIT_DISPLAY,
 			      m_tabstop);
       pp_flush (this->printer);
@@ -2336,7 +2371,7 @@ auto_diagnostic_group::~auto_diagnostic_group ()
 diagnostic_text_output_format::~diagnostic_text_output_format ()
 {
   /* Some of the errors may actually have been warnings.  */
-  if (diagnostic_kind_count (&m_context, DK_WERROR))
+  if (m_context.diagnostic_count (DK_WERROR))
     {
       /* -Werror was given.  */
       if (m_context.warning_as_error_requested_p ())
@@ -2661,9 +2696,10 @@ static void
 test_print_parseable_fixits_none ()
 {
   pretty_printer pp;
+  file_cache fc;
   rich_location richloc (line_table, UNKNOWN_LOCATION);
 
-  print_parseable_fixits (&pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
+  print_parseable_fixits (fc, &pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
   ASSERT_STREQ ("", pp_formatted_text (&pp));
 }
 
@@ -2674,6 +2710,7 @@ static void
 test_print_parseable_fixits_insert ()
 {
   pretty_printer pp;
+  file_cache fc;
   rich_location richloc (line_table, UNKNOWN_LOCATION);
 
   linemap_add (line_table, LC_ENTER, false, "test.c", 0);
@@ -2682,7 +2719,7 @@ test_print_parseable_fixits_insert ()
   location_t where = linemap_position_for_column (line_table, 10);
   richloc.add_fixit_insert_before (where, "added content");
 
-  print_parseable_fixits (&pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
+  print_parseable_fixits (fc, &pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
   ASSERT_STREQ ("fix-it:\"test.c\":{5:10-5:10}:\"added content\"\n",
 		pp_formatted_text (&pp));
 }
@@ -2694,6 +2731,7 @@ static void
 test_print_parseable_fixits_remove ()
 {
   pretty_printer pp;
+  file_cache fc;
   rich_location richloc (line_table, UNKNOWN_LOCATION);
 
   linemap_add (line_table, LC_ENTER, false, "test.c", 0);
@@ -2704,7 +2742,7 @@ test_print_parseable_fixits_remove ()
   where.m_finish = linemap_position_for_column (line_table, 20);
   richloc.add_fixit_remove (where);
 
-  print_parseable_fixits (&pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
+  print_parseable_fixits (fc, &pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
   ASSERT_STREQ ("fix-it:\"test.c\":{5:10-5:21}:\"\"\n",
 		pp_formatted_text (&pp));
 }
@@ -2716,6 +2754,7 @@ static void
 test_print_parseable_fixits_replace ()
 {
   pretty_printer pp;
+  file_cache fc;
   rich_location richloc (line_table, UNKNOWN_LOCATION);
 
   linemap_add (line_table, LC_ENTER, false, "test.c", 0);
@@ -2726,7 +2765,7 @@ test_print_parseable_fixits_replace ()
   where.m_finish = linemap_position_for_column (line_table, 20);
   richloc.add_fixit_replace (where, "replacement");
 
-  print_parseable_fixits (&pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
+  print_parseable_fixits (fc, &pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE, 8);
   ASSERT_STREQ ("fix-it:\"test.c\":{5:10-5:21}:\"replacement\"\n",
 		pp_formatted_text (&pp));
 }
@@ -2746,6 +2785,7 @@ test_print_parseable_fixits_bytes_vs_display_columns ()
   const int tabstop = 8;
 
   temp_source_file tmp (SELFTEST_LOCATION, ".c", content);
+  file_cache fc;
   const char *const fname = tmp.get_filename ();
 
   linemap_add (line_table, LC_ENTER, false, fname, 0);
@@ -2766,7 +2806,8 @@ test_print_parseable_fixits_bytes_vs_display_columns ()
 
   {
     pretty_printer pp;
-    print_parseable_fixits (&pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_BYTE,
+    print_parseable_fixits (fc, &pp, &richloc,
+			    DIAGNOSTICS_COLUMN_UNIT_BYTE,
 			    tabstop);
     snprintf (expected, buf_len,
 	      "fix-it:%s:{1:12-1:18}:\"color\"\n", escaped_fname);
@@ -2774,7 +2815,8 @@ test_print_parseable_fixits_bytes_vs_display_columns ()
   }
   {
     pretty_printer pp;
-    print_parseable_fixits (&pp, &richloc, DIAGNOSTICS_COLUMN_UNIT_DISPLAY,
+    print_parseable_fixits (fc, &pp, &richloc,
+			    DIAGNOSTICS_COLUMN_UNIT_DISPLAY,
 			    tabstop);
     snprintf (expected, buf_len,
 	      "fix-it:%s:{1:10-1:16}:\"color\"\n", escaped_fname);
